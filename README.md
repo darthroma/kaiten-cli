@@ -8,9 +8,7 @@
 
 ## Установка
 
-Нужны [uv](https://docs.astral.sh/uv/getting-started/installation/), Git и доступ
-к этому закрытому репозиторию. Если Git ещё не подключён к GitHub,
-[настройте авторизацию](docs/configuration.md#доступ-к-закрытому-репозиторию).
+Нужны [uv](https://docs.astral.sh/uv/getting-started/installation/) и Git.
 
 ```sh
 uv tool install "git+https://github.com/darthroma/kaiten-cli.git@v0.1.0"
