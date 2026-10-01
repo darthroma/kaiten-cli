@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaiten-agent-cli"
+version = "0.1.0"
+description = "Independent Kaiten REST API CLI for agents and scripts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["click>=8.3,<9"]
+
+[project.urls]
+Repository = "https://github.com/darthroma/kaiten-cli"
+Issues = "https://github.com/darthroma/kaiten-cli/issues"
+
+[project.scripts]
+kaiten = "kaiten_cli.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kaiten_cli = ["SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
