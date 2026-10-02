@@ -61,7 +61,7 @@ class KaitenPolicy:
     def assert_allowed(self, action: str, resource: int | None = None) -> None:
         if not self.board_allowlist:
             raise KaitenError("allowlist_empty", "A nonempty board allowlist is required before any HTTP request.")
-        if action not in {"cards.read", "comments.create", "cards.move"} or (resource is not None and resource not in self.board_allowlist):
+        if action not in {"cards.read", "comments.create", "cards.move", "files.upload"} or (resource is not None and resource not in self.board_allowlist):
             raise KaitenError("forbidden", "This action or board is outside the local allowlist.")
 
 

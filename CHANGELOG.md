@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- Upload local files to allowed cards and existing internal comments.
+- Add repeatable `--file` to internal comment preparation and posting.
+- Use restricted-access UUID routes, content-bound previews and metadata readback.
+- Report partial comment/file results without retrying or duplicating the comment.
+- Extend the companion skill with attachment workflows.
+
 ## 0.1.0 — 2026-10-01
 
 - Independent Kaiten-only repository and Python package, command `kaiten`.

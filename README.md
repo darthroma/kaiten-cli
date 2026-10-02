@@ -3,7 +3,8 @@
 Работа с Kaiten из терминала и чата агента:
 
 - Чтение и поиск карточек на выбранных досках.
-- Внутренние комментарии с упоминанием коллег.
+- Внутренние комментарии с упоминанием коллег и вложениями.
+- Загрузка файлов прямо в карточку.
 - Перемещение карточек между колонками одной доски.
 
 ## Установка
@@ -11,7 +12,7 @@
 Нужны [uv](https://docs.astral.sh/uv/getting-started/installation/) и Git.
 
 ```sh
-uv tool install "git+https://github.com/darthroma/kaiten-cli.git@v0.1.0"
+uv tool install "git+https://github.com/darthroma/kaiten-cli.git"
 kaiten skill install
 ```
 
@@ -41,6 +42,10 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 
 > В этой карточке оставь комментарий «Готово» и отметь коллегу @username.
 
+> Прикрепи этот PDF к комментарию «Отчёт готов» и отметь коллегу @username.
+
+> Загрузи этот Excel во вложения карточки.
+
 > Перемести эту карточку в колонку «В работе».
 
 Агент найдёт карточку, выполнит разрешённое действие и проверит результат.
@@ -51,6 +56,7 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 kaiten cards view 12345 --board 456
 kaiten cards search 'Отчёт' --board 456
 kaiten boards info 456
+kaiten files upload 12345 --board 456 --file ./report.pdf --authorization direct
 ```
 
 Замените числа своими ID. Доступные команды — `kaiten --help`.

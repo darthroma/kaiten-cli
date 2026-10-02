@@ -11,6 +11,7 @@ import click
 from .policy import KaitenError, LocalConfigStore, normalize_profile, normalize_tenant
 from .read import KaitenAdapter
 from .mutations import KaitenMutations
+from .files import KaitenFiles
 from .auth import CredentialStore
 from .diagnostics import doctor as check_setup
 
@@ -33,7 +34,7 @@ def _present(ctx, command_json, operation):
     as_json = bool(ctx.obj["json"] or command_json)
     try:
         result = operation()
-        if result.get("status") in {"ambiguous", "not-applied"}:
+        if result.get("status") in {"ambiguous", "not-applied", "partial"}:
             raise KaitenError("mutation_" + result["status"].replace("-", "_"),
                               "Check the readback result before any new write; do not automatically repeat this command.", result)
     except KaitenError as exc:
@@ -87,7 +88,7 @@ class EnvelopeGroup(click.Group):
 @click.option("--json", "group_json", is_flag=True)
 @click.pass_context
 def kaiten(ctx, group_json):
-    """Kaiten: scoped reads, internal comments and same-board movement."""
+    """Kaiten: scoped reads, internal comments, file attachments and same-board moves."""
     ctx.obj = {"root": Path(__file__).resolve().parents[2], "json": group_json}
 
 
@@ -292,6 +293,8 @@ def _comment_options(function):
     for decorator in (
         click.option("--json", "command_json", is_flag=True),
         click.option("--board", type=click.IntRange(min=1)),
+        click.option("--file", "file_paths", multiple=True, type=click.Path(path_type=Path, dir_okay=False),
+                     help="Attach a local file to this internal comment; repeat for up to ten files."),
         click.option("--mention", help="Explicit answer: 'нет'/'none' or exact name/@username."),
         click.option("--text", required=True, help="Exact UTF-8 draft without embedded @mentions."),
         click.argument("reference"),
@@ -303,10 +306,10 @@ def _comment_options(function):
 @comments.command("prepare")
 @_comment_options
 @click.pass_context
-def comment_prepare(ctx, reference, text, mention, board, command_json):
+def comment_prepare(ctx, reference, text, mention, board, command_json, file_paths):
     """Preview a draft and ask about @mention; with the answer return exact final text."""
-    _present(ctx, command_json, lambda: KaitenMutations(_store(ctx)).prepare_comment(
-        reference, text, mention=mention, board_id=board))
+    _present(ctx, command_json, lambda: KaitenFiles(_store(ctx)).prepare_comment(
+        reference, text, mention=mention, board_id=board, file_paths=file_paths))
 
 
 @comments.command("post")
@@ -314,15 +317,71 @@ def comment_prepare(ctx, reference, text, mention, board, command_json):
 @click.option("--approval", required=True, help="Hash of the exact approved final prepare result.")
 @click.option("--dry-run", is_flag=True, help="Return current final preview without POST.")
 @click.pass_context
-def comment_post(ctx, reference, text, mention, board, command_json, approval, dry_run):
+def comment_post(ctx, reference, text, mention, board, command_json, approval, dry_run, file_paths):
     """Send once with internal=true, then verify author/text/ID through readback."""
     def operation():
-        adapter = KaitenMutations(_store(ctx))
+        adapter = KaitenFiles(_store(ctx))
         if mention is None:
             raise KaitenError("mention_required", "Answer the mention question through --mention before sending.")
         if dry_run:
-            return {"dry_run": True, **adapter.prepare_comment(reference, text, mention=mention, board_id=board)}
-        return adapter.post_comment(reference, text, mention=mention, approval=approval, board_id=board)
+            return {"dry_run": True, **adapter.prepare_comment(reference, text, mention=mention, board_id=board, file_paths=file_paths)}
+        return adapter.post_comment(reference, text, mention=mention, approval=approval, board_id=board, file_paths=file_paths)
+    _present(ctx, command_json, operation)
+
+
+@kaiten.group("files")
+def files():
+    """Attach local files to allowed cards or existing internal comments."""
+
+
+@files.command("list")
+@click.argument("reference")
+@click.option("--board", type=click.IntRange(min=1))
+@click.option("--comment", type=click.IntRange(min=1))
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def file_list(ctx, reference, board, comment, command_json):
+    """Read attachment metadata without printing public or signed URLs."""
+    _present(ctx, command_json, lambda: KaitenFiles(_store(ctx)).list_files(
+        reference, board_id=board, comment_id=comment))
+
+
+def _file_options(function):
+    for decorator in (
+        click.option("--json", "command_json", is_flag=True),
+        click.option("--board", type=click.IntRange(min=1)),
+        click.option("--comment", type=click.IntRange(min=1), help="Existing internal comment ID; omit to attach to the card."),
+        click.option("--file", "file_path", required=True, type=click.Path(path_type=Path, dir_okay=False)),
+        click.argument("reference"),
+    ):
+        function = decorator(function)
+    return function
+
+
+@files.command("prepare")
+@_file_options
+@click.pass_context
+def file_prepare(ctx, reference, file_path, board, comment, command_json):
+    """Inspect the card/comment and file size/hash, without uploading."""
+    _present(ctx, command_json, lambda: KaitenFiles(_store(ctx)).prepare_file(
+        reference, file_path, board_id=board, comment_id=comment))
+
+
+@files.command("upload")
+@_file_options
+@click.option("--authorization", required=True, type=click.Choice(["direct", "approved"]),
+              help="direct: exact user request; approved: user accepted this file/target preview.")
+@click.option("--approval", help="Required with approved; hash from files prepare.")
+@click.option("--dry-run", is_flag=True, help="Inspect the exact file and target without uploading.")
+@click.pass_context
+def file_upload(ctx, reference, file_path, board, comment, command_json, authorization, approval, dry_run):
+    """Upload once using restricted access, then read back saved metadata."""
+    def operation():
+        adapter = KaitenFiles(_store(ctx))
+        if dry_run:
+            return {"dry_run": True, **adapter.prepare_file(reference, file_path, board_id=board, comment_id=comment)}
+        return adapter.upload_file(reference, file_path, board_id=board, comment_id=comment,
+                                   authorization=authorization, approval=approval)
     _present(ctx, command_json, operation)
 
 

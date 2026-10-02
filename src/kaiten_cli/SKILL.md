@@ -1,6 +1,6 @@
 ---
 name: kaiten-cli
-description: "Работай с карточками в Kaiten (Кайтен) через kaiten: чтение, внутренние комментарии и перемещение в пределах разрешённых досок."
+description: "Работай с карточками в Kaiten (Кайтен) через kaiten: чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
 ---
 
 # Kaiten CLI
@@ -80,6 +80,41 @@ kaiten comments post 456 --text 'Проверка завершена' --mention 
 Only internal=true comments are supported. Author, new comment ID, exact text
 and internal flag are checked after one POST. No external recipients or Service
 Desk notifications are exposed.
+
+## File attachments
+
+Use only local files the user selected for the exact card/comment. Keep the
+board hint once known. Inspect `files prepare <CARD> --file <PATH> --json` before
+upload: it resolves the card UID, file name, size and SHA-256. For an existing
+internal comment add --comment <numeric ID from comments list>. An exact user
+upload request authorizes `files upload ... --authorization direct`; for your
+own proposal wait for approval of the file and target, then use
+--authorization approved --approval <hash>. --dry-run uploads nothing.
+
+For a new internal comment, add repeatable --file to both comments prepare and
+comments post, retaining the exact text/mention/paths and prepared approval.
+Explicitly requested files and mention authorize that draft; do not ask again.
+The CLI creates and verifies the comment, then uploads each file once.
+files list reads old and new attachment metadata without exposing URLs.
+
+```sh
+kaiten files upload 456 --board 123 --file ./report.pdf --authorization direct --json
+kaiten files upload 456 --board 123 --comment 987 --file ./data.xlsx --authorization direct --json
+kaiten comments prepare 456 --board 123 --text 'Отчёт готов' --mention нет --file ./report.pdf --json
+```
+
+mutation_partial means the comment already exists and only some or no files
+were attached. Report its ID and the successful/failed/remaining files. Never
+repeat comments post automatically. For mutation_ambiguous inspect current
+attachments with files list <CARD> [--comment <ID>] --json before a new upload; a timeout may already have applied.
+Use files upload --comment <existing ID> for a separately authorized missing
+attachment, without recreating the text. Limits: ten files and 100 MiB total
+per comment; Kaiten may impose a smaller size limit.
+
+Only UUID-based restricted file routes are used. On uid_required/403 explain
+the returned hint and stop; do not use numeric legacy upload paths, browser
+cookies or change company settings. Do not print/store temporary signed links.
+Attachment readback verifies metadata, not remote byte-for-byte content.
 
 ## Moves
 

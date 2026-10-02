@@ -1,7 +1,8 @@
-"""Direct Kaiten REST API transport. No subprocess, redirect or automatic retry."""
+"""Direct JSON and restricted-file transport. No redirect or automatic retry."""
 
 import json
 import re
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -15,6 +16,11 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+UID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+RESOURCE = rf"/[a-z]+(?:/(?:[a-z]+|[1-9][0-9]*|{UID}))*"
+FILE_TARGET = rf"/cards/{UID}(?:/comments/{UID})?/files"
+
+
 class KaitenClient:
     def __init__(self, credentials, *, open_request=None, timeout=30):
         self.credentials = credentials
@@ -23,15 +29,32 @@ class KaitenClient:
         self.timeout = timeout
 
     def request(self, method, path, *, params=None, body=None):
-        if method not in {"GET", "POST", "PATCH"} or not re.fullmatch(r"/[a-z]+(?:/(?:[a-z]+|[1-9][0-9]*))*", path):
+        if method not in {"GET", "POST", "PATCH"} or not re.fullmatch(RESOURCE, path):
             raise KaitenError("request_invalid", "Use a supported relative API resource path.")
         url = self.base_url + path
         if params:
             url += "?" + urlencode(params)
         payload = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        return self._send(method, url, payload, "application/json")
+
+    def upload_file(self, path, *, name, data, mime_type):
+        """One POST to a UUID-only route, using the documented singular file field."""
+        if not re.fullmatch(FILE_TARGET, path):
+            raise KaitenError("request_invalid", "File uploads require a restricted card/comment UUID path.")
+        if (not isinstance(name, str) or not name or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                or not isinstance(data, bytes) or not re.fullmatch(r"[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+", mime_type)):
+            raise KaitenError("file_invalid", "Use a regular file with a valid name and MIME type.")
+        boundary = "kaiten-" + uuid4().hex
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        head = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{escaped}"\r\n'
+                f"Content-Type: {mime_type}\r\n\r\n").encode("utf-8")
+        payload = head + data + f"\r\n--{boundary}--\r\n".encode()
+        return self._send("POST", self.base_url + path, payload, "multipart/form-data; boundary=" + boundary)
+
+    def _send(self, method, url, payload, content_type):
         request = Request(url, data=payload, method=method, headers={
             "Authorization": "Bearer " + self.credentials.token,
-            "Accept": "application/json", "Content-Type": "application/json",
+            "Accept": "application/json", "Content-Type": content_type,
             "X-kaiten-Client": "kaiten-agent-cli", "X-kaiten-Client-Version": __version__,
         })
         try:

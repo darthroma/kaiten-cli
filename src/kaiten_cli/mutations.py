@@ -114,7 +114,7 @@ class KaitenMutations(KaitenAdapter):
             if (not isinstance(item, dict) or type(item.get("id")) is not int
                     or item["id"] <= 0 or type(item.get("card_id")) is not int or item["card_id"] != card_id):
                 raise KaitenError("bad_json", "Kaiten API comment identity has an unexpected shape.")
-            result.append({key: item.get(key) for key in ("id", "card_id", "text", "author_id", "internal", "deleted")})
+            result.append({key: item.get(key) for key in ("id", "uid", "card_id", "text", "author_id", "internal", "deleted")})
         return result
 
     def list_comments(self, reference, *, board_id=None):
