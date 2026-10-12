@@ -158,3 +158,37 @@ CLI показывает подсказку, но не меняет настро
 Официальные описания: [загрузка в карточку](https://developers.kaiten.ru/restricted-access-card-files/attach-file-to-card),
 [загрузка в комментарий](https://developers.kaiten.ru/restricted-access-comment-files/attach-file-to-comment),
 [переход на новый API](https://developers.kaiten.ru/restricted-access-files-migration).
+
+
+## Создание карточек
+
+Сначала посмотрите колонки и дорожки выбранной доски:
+
+```sh
+kaiten boards info 456 --json
+kaiten cards create --title 'Проверить выгрузку' --board 456 --column 789 --description 'Сверить данные отчёта' --dry-run --json
+kaiten cards create --title 'Проверить выгрузку' --board 456 --column 789 --description 'Сверить данные отчёта' --authorization direct --json
+```
+
+Обязательны `--title`, `--board` и `--column`. Если дорожек несколько, укажите
+`--lane <ID>`; единственная дорожка выбирается автоматически. Дополнительные поля:
+`--description` (до 32768 символов), `--due-date YYYY-MM-DD` (без времени),
+`--responsible 'Имя Фамилия'`, `--responsible @username` или числовой ID пользователя.
+Имя ответственного должно однозначно совпадать с активным аккаунтом.
+Название — от 1 до 1024 символов. Создавать можно только на разрешённых досках.
+
+`--dry-run` ничего не создаёт и возвращает предпросмотр с `approval`.
+`--authorization direct` означает точный запрос пользователя на создание.
+Для предложения агента используйте согласованный предпросмотр и
+`--authorization approved --approval '<hash из dry-run>'` с теми же параметрами.
+
+Успешный JSON содержит `status: applied`, `card_id`, `url`, `card`, `readback: true`.
+После единственного POST команда перечитывает карточку и, если выбран ответственный,
+его роль. Файлы затем можно прикрепить через `files upload` к новому ID.
+Таймаут, отсутствие ID в ответе или несовпадение полей — `mutation_ambiguous`
+с ненулевым кодом выхода. Известные ID и ссылка сохраняются в `error.details`.
+Проверьте карточку через `cards view` или поиск по выбранной доске; повторять
+создание автоматически нельзя. Предпросмотр не защищает от дубликатов при
+повторном запуске: каждый вызов создания — новая карточка.
+
+[Официальный API создания карточек](https://developers.kaiten.ru/cards/create-new-card).
