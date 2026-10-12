@@ -1,6 +1,6 @@
 ---
 name: kaiten-cli
-description: "Работай с карточками в Kaiten (Кайтен) через kaiten: создание, чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
+description: "Работай с карточками в Kaiten (Кайтен) через kaiten: создание, редактирование, чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
 ---
 
 # Kaiten CLI
@@ -91,6 +91,35 @@ inspect cards view by ID or cards search on the exact board, and clarify an
 uncertain result before any separately authorized creation. Preview hashes
 are not idempotency keys; repeating a successful command creates another card.
 Attach requested files to the confirmed new card through files upload.
+
+## Edit cards
+
+Use `cards update <ID-or-URL> [--board ID]` with only the requested fields:
+--title, --description, --due-date YYYY-MM-DD or --clear-due-date.
+Omitted fields stay unchanged. --description replaces the whole description;
+read the current card first when asked to append or revise part of its text,
+and preserve unrelated content. --description '' explicitly clears it.
+Do not combine --due-date and --clear-due-date. Resolve text matches through
+cards search before editing; update requires a numeric ID or tenant card URL.
+
+Inspect --dry-run to see before/changes. An exact user edit request authorizes
+--authorization direct without another confirmation. For your own proposal,
+show the preview, obtain the user's acceptance, and apply identical arguments
+with --authorization approved --approval <hash>. Source fields and credentials
+are bound to the preview. A stale preview stops before PATCH; inspect and
+prepare the current change again. Concurrent edits are not atomically locked.
+
+```sh
+kaiten cards update 456 --board 123 --title 'Новое название' --dry-run --json
+kaiten cards update 456 --board 123 --description 'Обновлённое описание' --authorization direct --json
+kaiten cards update 456 --board 123 --clear-due-date --authorization direct --json
+```
+
+Only selected fields are sent in one PATCH, then read back. already-applied
+means no write was needed. Return the confirmed card/link; on an uncertain
+outcome inspect current state without automatically repeating the edit.
+Use move for location changes, files for attachments and comments for discussion.
+This edit command does not change responsible users, archive or delete cards.
 
 ## Internal comments
 

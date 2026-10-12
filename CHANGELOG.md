@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Edit card titles, descriptions and date-only deadlines on allowed boards.
+- Clear descriptions or deadlines explicitly; leave omitted fields untouched.
+- Preview before/after fields, reject stale proposals, skip no-op updates and verify one PATCH.
+- Extend the companion skill with card editing.
+
 ## 0.3.0
 
 - Create cards on allowed boards with explicit column/lane selection and dry-run previews.
