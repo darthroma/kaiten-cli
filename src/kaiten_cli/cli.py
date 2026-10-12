@@ -13,6 +13,7 @@ from .read import KaitenAdapter
 from .mutations import KaitenMutations
 from .files import KaitenFiles
 from .creation import KaitenCreation
+from .editing import KaitenEditing
 from .auth import CredentialStore
 from .diagnostics import doctor as check_setup
 
@@ -89,7 +90,7 @@ class EnvelopeGroup(click.Group):
 @click.option("--json", "group_json", is_flag=True)
 @click.pass_context
 def kaiten(ctx, group_json):
-    """Kaiten: create/read cards, internal comments, file attachments and same-board moves."""
+    """Kaiten: create, edit and read cards, internal comments, file attachments and same-board moves."""
     ctx.obj = {"root": Path(__file__).resolve().parents[2], "json": group_json}
 
 
@@ -240,7 +241,7 @@ def setup_discovery(ctx, profile, tenant, space_ids, spaces_only, workers, comma
 
 @kaiten.group("cards")
 def cards():
-    """Create and read cards strictly inside the local board allowlist."""
+    """Create, edit and read cards strictly inside the local board allowlist."""
 
 
 @cards.command("view")
@@ -287,6 +288,32 @@ def card_create(ctx, title, board, column, lane, description, due_date, responsi
         if dry_run:
             return {"dry_run": True, **adapter.prepare_card(title, **options)}
         return adapter.create_card(title, authorization=authorization, approval=approval, **options)
+    _present(ctx, command_json, operation)
+
+
+@cards.command("update")
+@click.argument("reference")
+@click.option("--board", type=click.IntRange(min=1), help="Known board ID to avoid scanning other allowed boards.")
+@click.option("--title", help="Replace the title (1–1024 characters).")
+@click.option("--description", help="Replace the whole description; use an empty string to clear it.")
+@click.option("--due-date", help="Set a deadline in YYYY-MM-DD format, without a time.")
+@click.option("--clear-due-date", is_flag=True, help="Remove the current deadline.")
+@click.option("--authorization", type=click.Choice(["direct", "approved"]),
+              help="direct: exact user edit request; approved: accepted dry-run preview. Required for writes.")
+@click.option("--approval", help="Hash from --dry-run; required with --authorization approved.")
+@click.option("--dry-run", is_flag=True, help="Show the current fields and selected changes without PATCH.")
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def card_update(ctx, reference, board, title, description, due_date, clear_due_date,
+                authorization, approval, dry_run, command_json):
+    """Edit selected fields of one card by ID/URL, then verify them. Never retries."""
+    def operation():
+        adapter = KaitenEditing(_store(ctx))
+        options = dict(board_id=board, title=title, description=description,
+                       due_date=due_date, clear_due_date=clear_due_date)
+        if dry_run:
+            return {"dry_run": True, **adapter.prepare_update(reference, **options)}
+        return adapter.update_card(reference, authorization=authorization, approval=approval, **options)
     _present(ctx, command_json, operation)
 
 
