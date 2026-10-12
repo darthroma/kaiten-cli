@@ -1,6 +1,6 @@
 ---
 name: kaiten-cli
-description: "Работай с карточками в Kaiten (Кайтен) через kaiten: чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
+description: "Работай с карточками в Kaiten (Кайтен) через kaiten: создание, чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
 ---
 
 # Kaiten CLI
@@ -58,6 +58,39 @@ adapter interfaces from older chats.
 Card/user/space pagination is bounded at 20 × 100. `complete:false` means the
 card search is truncated, not empty: narrow the board/query. Incomplete user
 or space catalogs stop the dependent workflow.
+
+## Create cards
+
+Use `cards create --title '<exact title>' --board <ID> --column <ID>`.
+Resolve the destination with `boards info <ID> --json`; column is required,
+and --lane is required if several lanes exist. Never choose among ambiguous
+boards/columns/lanes silently. Missing optional description, deadline or assignee
+does not require a question. --description preserves the exact text;
+--due-date accepts YYYY-MM-DD; --responsible resolves one exact full name,
+@username or numeric active user ID. Duplicate names require a precise choice.
+
+For an exact user request to create this card, use --authorization direct
+without another confirmation. For your own proposal, show --dry-run output,
+wait for the user to accept the title/content/destination, then repeat identical
+arguments with --authorization approved --approval <returned hash>.
+The dry-run requires no authorization and creates nothing. Inputs, target and
+credentials are bound to the preview. One POST is followed by card readback,
+and member readback if a responsible account was selected. Report the returned
+card ID and URL only as confirmed creation when status is applied.
+
+```sh
+kaiten boards info 123 --json
+kaiten cards create --title 'Проверить выгрузку' --board 123 --column 789 --description 'Сверить данные отчёта' --dry-run --json
+kaiten cards create --title 'Проверить выгрузку' --board 123 --column 789 --description 'Сверить данные отчёта' --authorization direct --json
+```
+
+A lost POST response may mean the card exists even when its ID is unknown.
+Never repeat cards create automatically or treat an older same-title card as
+proof of success. On mutation_ambiguous report the known ID/link (if returned),
+inspect cards view by ID or cards search on the exact board, and clarify an
+uncertain result before any separately authorized creation. Preview hashes
+are not idempotency keys; repeating a successful command creates another card.
+Attach requested files to the confirmed new card through files upload.
 
 ## Internal comments
 
@@ -140,5 +173,5 @@ after a write applied. mutation_ambiguous/mutation_not_applied return nonzero
 with readback in error.details and retry_safe:false. Do not repeat automatically;
 inspect current state and explain uncertainty. Separate runs are new writes:
 preview hashes bind inputs and credentials, not durable deduplication. Concurrent
-remote edits are not atomically prevented. Create/delete/admin/cross-board
+remote edits are not atomically prevented. Delete/admin/cross-board
 commands are outside this CLI's supported scope.

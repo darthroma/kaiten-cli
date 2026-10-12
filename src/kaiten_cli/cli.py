@@ -12,6 +12,7 @@ from .policy import KaitenError, LocalConfigStore, normalize_profile, normalize_
 from .read import KaitenAdapter
 from .mutations import KaitenMutations
 from .files import KaitenFiles
+from .creation import KaitenCreation
 from .auth import CredentialStore
 from .diagnostics import doctor as check_setup
 
@@ -88,7 +89,7 @@ class EnvelopeGroup(click.Group):
 @click.option("--json", "group_json", is_flag=True)
 @click.pass_context
 def kaiten(ctx, group_json):
-    """Kaiten: scoped reads, internal comments, file attachments and same-board moves."""
+    """Kaiten: create/read cards, internal comments, file attachments and same-board moves."""
     ctx.obj = {"root": Path(__file__).resolve().parents[2], "json": group_json}
 
 
@@ -239,7 +240,7 @@ def setup_discovery(ctx, profile, tenant, space_ids, spaces_only, workers, comma
 
 @kaiten.group("cards")
 def cards():
-    """Read cards strictly inside the local board allowlist."""
+    """Create and read cards strictly inside the local board allowlist."""
 
 
 @cards.command("view")
@@ -260,6 +261,33 @@ def view(ctx, reference, board, command_json):
 def search(ctx, query, board, command_json):
     """Search UTF-8 text (or an ID/URL) only inside permitted boards."""
     _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(query, board_id=board))
+
+
+@cards.command("create")
+@click.option("--title", required=True, help="Exact card title (1–1024 characters).")
+@click.option("--board", required=True, type=click.IntRange(min=1))
+@click.option("--column", required=True, type=click.IntRange(min=1))
+@click.option("--lane", type=click.IntRange(min=1), help="Required when the board has several lanes.")
+@click.option("--description", help="Exact description, up to 32768 characters.")
+@click.option("--due-date", help="Deadline in YYYY-MM-DD format, without a time.")
+@click.option("--responsible", help="Exact full name, @username or numeric user ID.")
+@click.option("--authorization", type=click.Choice(["direct", "approved"]),
+              help="direct: exact user request; approved: accepted dry-run preview. Required for writes.")
+@click.option("--approval", help="Hash from --dry-run; required with --authorization approved.")
+@click.option("--dry-run", is_flag=True, help="Inspect the target and return a preview without creating a card.")
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def card_create(ctx, title, board, column, lane, description, due_date, responsible,
+                authorization, approval, dry_run, command_json):
+    """Create one card, verify its fields and return its ID and link. Never retries."""
+    def operation():
+        adapter = KaitenCreation(_store(ctx))
+        options = dict(board_id=board, column_id=column, lane_id=lane, description=description,
+                       due_date=due_date, responsible=responsible)
+        if dry_run:
+            return {"dry_run": True, **adapter.prepare_card(title, **options)}
+        return adapter.create_card(title, authorization=authorization, approval=approval, **options)
+    _present(ctx, command_json, operation)
 
 
 @kaiten.group("boards")

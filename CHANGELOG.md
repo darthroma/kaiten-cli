@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Create cards on allowed boards with explicit column/lane selection and dry-run previews.
+- Support descriptions, date-only deadlines and exact responsible account resolution.
+- Verify the returned card and assignment; report uncertain writes without duplicate creation.
+- Extend the companion skill with card creation.
+
 ## 0.2.0
 
 - Upload local files to allowed cards and existing internal comments.
