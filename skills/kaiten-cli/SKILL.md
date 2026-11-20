@@ -42,6 +42,8 @@ pass --board on subsequent card/comment/move commands to avoid broad searches. I
 ```sh
 kaiten cards search 'кастомные отчёты' --json
 kaiten cards view 456 --board 123 --json
+kaiten cards archive --board 123 --json
+kaiten cards history 456 --board 123 --json
 kaiten comments list 456 --board 123 --json
 ```
 
@@ -50,14 +52,24 @@ kaiten comments list 456 --board 123 --json
 `/cards/<ID>/comments [--board ID]`. It preserves scope and safe output, supports
 no raw writes, and does not allow arbitrary URLs or admin endpoints.
 
-Text search matches card text; it does not identify assignees. This CLI has no
-assignee/member/status search command yet. Explain that limitation for person
-queries; do not claim text matches are assigned tasks or use removed private
-adapter interfaces from older chats.
+Card read output includes members when returned by Kaiten. Match people by
+`user_id` (or `id`), using the name and username to confirm identity. Member
+`type: 1` is a participant and `type: 2` is the responsible person. For counts
+from results, filter the returned `members` arrays and check `complete`.
+`cards search` still matches card text and has no server-side assignee/member
+filter.
 
-Card/user/space pagination is bounded at 20 × 100. `complete:false` means the
-card search is truncated, not empty: narrow the board/query. Incomplete user
-or space catalogs stop the dependent workflow.
+Use `cards history` for movement and archive events by card ID or URL.
+`archived_from` reports the location immediately preceding the last archive event
+when that active event is visible. `archived_at` reports the timestamp of the
+last archive event if it is visible. History omits events on disallowed boards
+and sets `complete` to false in that case.
+
+Use `cards archive` to list archived cards from one allowed board. The board ID
+is required. Card/user/space pagination is bounded at 20 × 100. `complete:false`
+means the card search or archive list reached this limit and may be incomplete.
+Narrow a card search by board or query. Incomplete user or space catalogs stop
+the dependent workflow.
 
 ## Create cards
 

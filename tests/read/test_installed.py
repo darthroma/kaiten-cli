@@ -66,6 +66,12 @@ def test_installed_native_setup_without_other_cli(installed_kaiten_surface, tmp_
     assert code == 0 and doctor['data']['healthy'] and doctor['data']['backend'] == 'direct_api'
     code, denied = invoke('cards', 'view', '33', '--board', '99')
     assert code == 1 and denied['error']['code'] == 'forbidden'
+    code, denied = invoke('cards', 'archive', '--board', '99')
+    assert code == 1 and denied['error']['code'] == 'forbidden'
+    code, missing_board = invoke('cards', 'archive')
+    assert code == 2 and missing_board['error']['code'] == 'cli_usage_error'
+    code, denied = invoke('cards', 'history', '33', '--board', '99')
+    assert code == 1 and denied['error']['code'] == 'forbidden'
     code, failure = invoke('setup', '--token', 'synthetic-secret-do-not-echo')
     assert code == 2 and failure['error']['code'] == 'cli_usage_error'
     assert 'synthetic-secret' not in json.dumps(failure)
