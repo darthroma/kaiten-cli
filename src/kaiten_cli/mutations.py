@@ -167,16 +167,6 @@ class KaitenMutations(KaitenAdapter):
         status = "not-applied" if self._definite_rejection(error) and not matches else "ambiguous"
         return self._outcome(status, error=error, card_id=card_id, readback=True)
 
-    def _topology(self, policy, board_id):
-        topology = {}
-        for resource in ("columns", "lanes"):
-            data = self._request(policy.profile, "GET", f"/boards/{board_id}/{resource}")
-            items = self._metadata(data)
-            if any(item.get("board_id", board_id) != board_id for item in data):
-                raise KaitenError("forbidden", "Kaiten API returned topology from a different board.")
-            topology[resource] = items
-        return topology
-
     def board_info(self, board_id):
         policy = load_policy(self.store)
         policy.assert_allowed("cards.read", board_id)

@@ -1,8 +1,12 @@
 """Scope and pagination through our own HTTP client."""
 
-import pytest
+import json
 from urllib.error import URLError
 
+import pytest
+from click.testing import CliRunner
+
+from kaiten_cli import cli
 from kaiten_cli.policy import KaitenError
 from kaiten_cli.read import KaitenAdapter
 
@@ -50,6 +54,72 @@ def test_scoped_lookup_follows_pages(fake_api, local_store):
     result = KaitenAdapter(local_store, **backend).find_cards('777')
     assert result['status'] == 'found' and result['cards'][0]['id'] == 777 and result['complete']
     assert len(fake_api.calls()) == 2
+
+
+def test_archive_lists_only_the_requested_board_across_pages(fake_api, local_store):
+    local_store.save(profile='test-profile', tenant='example.kaiten.ru', board_allowlist=[12, 34])
+    archive = {**CARD, 'condition': 2}
+    first_page = [{**archive, 'id': i} for i in range(100, 200)]
+    backend = fake_api({('GET', '/cards', '0'): first_page,
+                        ('GET', '/cards', '100'): [archive]})
+
+    result = KaitenAdapter(local_store, **backend).list_archived_cards(board_id=12)
+
+    assert result['status'] == 'found' and result['complete'] is True
+    assert [card['id'] for card in result['cards']] == [*range(100, 200), 33]
+    assert result['cards'][-1]['condition'] == 2
+    assert fake_api.calls() == [
+        {'method': 'GET', 'path': '/cards', 'body': None,
+         'params': {'board_id': ['12'], 'condition': ['2'], 'limit': ['100'],
+                    'offset': [offset], 'additional_card_fields': ['description']}}
+        for offset in ('0', '100')
+    ]
+
+
+@pytest.mark.parametrize('command,arguments', [
+    ('view', ['33']),
+    ('search', ['Задача']),
+    ('archive', []),
+])
+def test_card_commands_include_safe_metadata(command, arguments, monkeypatch, fake_api, local_store):
+    member = {'id': 7, 'user_id': 7, 'full_name': 'Участник', 'username': 'member', 'type': 1}
+    responsible = {'id': 8, 'user_id': 8, 'full_name': 'Ответственный', 'username': 'owner', 'type': 2}
+    owner = {'id': 9, 'full_name': 'Автор', 'username': 'author'}
+    tag = {'id': 12, 'tag_id': 1, 'name': 'Метка', 'color': 3}
+    payload = dict(CARD, condition=2, archived=True, due_date='2026-12-01',
+                   members=[{**member, 'email': 'private@example.invalid'}, responsible],
+                   owner={**owner, 'email': 'private@example.invalid'},
+                   tags=[{**tag, 'private': 'hidden'}],
+                   board={'id': 12, 'title': 'Доска', 'settings': {'token': 'hidden'}},
+                   files=[{'url': 'https://example.invalid/signed'}], share_id='hidden')
+    adapter = KaitenAdapter(local_store, **fake_api({'/cards': [payload]}))
+    monkeypatch.setattr(cli, 'KaitenAdapter', lambda store: adapter)
+
+    result = CliRunner().invoke(cli.kaiten, ['cards', command, *arguments, '--board', '12', '--json'])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)['data']['cards'] == [{
+        **{key: value for key, value in CARD.items() if key != 'members'},
+        'condition': 2, 'archived': True, 'due_date': '2026-12-01',
+        'members': [member, responsible], 'owner': owner, 'tags': [tag],
+        'board': {'id': 12, 'title': 'Доска'},
+    }]
+    assert len(fake_api.calls()) == 1
+
+
+@pytest.mark.parametrize('board,reply,code,count', [
+    (99, {'condition': 2}, 'forbidden', 0),
+    (12, {'board_id': 34, 'condition': 2}, 'forbidden', 1),
+    (12, {'condition': 1}, 'bad_json', 1),
+])
+def test_archive_rejects_cards_outside_the_requested_archive(board, reply, code, count, fake_api, local_store):
+    adapter = KaitenAdapter(local_store, **fake_api({'/cards': [{**CARD, **reply}]}))
+
+    with pytest.raises(KaitenError) as failure:
+        adapter.list_archived_cards(board_id=board)
+
+    assert failure.value.code == code
+    assert len(fake_api.calls()) == count
 
 
 @pytest.mark.parametrize('query,domain,payload,code,count', [

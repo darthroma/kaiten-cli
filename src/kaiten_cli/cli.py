@@ -251,7 +251,8 @@ def cards():
 @click.pass_context
 def view(ctx, reference, board, command_json):
     """Find a card by numeric ID or HTTPS URL, scanning only allowed boards."""
-    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(reference, board_id=board))
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(
+        reference, board_id=board, include_metadata=True))
 
 
 @cards.command("search")
@@ -261,7 +262,27 @@ def view(ctx, reference, board, command_json):
 @click.pass_context
 def search(ctx, query, board, command_json):
     """Search UTF-8 text (or an ID/URL) only inside permitted boards."""
-    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(query, board_id=board))
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(
+        query, board_id=board, include_metadata=True))
+
+
+@cards.command("archive")
+@click.option("--board", required=True, type=click.IntRange(min=1))
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def card_archive(ctx, board, command_json):
+    """List archived cards on one allowed board."""
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).list_archived_cards(board_id=board))
+
+
+@cards.command("history")
+@click.argument("reference")
+@click.option("--board", type=click.IntRange(min=1))
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def card_history(ctx, reference, board, command_json):
+    """Read a card's location history and latest archive origin on allowed boards."""
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).card_history(reference, board_id=board))
 
 
 @cards.command("create")

@@ -29,7 +29,10 @@ class KaitenClient:
         self.timeout = timeout
 
     def request(self, method, path, *, params=None, body=None):
-        if method not in {"GET", "POST", "PATCH"} or not re.fullmatch(RESOURCE, path):
+        resource = RESOURCE
+        if method == "GET":
+            resource += r"|/cards/[1-9][0-9]*/location-history"
+        if method not in {"GET", "POST", "PATCH"} or not re.fullmatch(resource, path):
             raise KaitenError("request_invalid", "Use a supported relative API resource path.")
         url = self.base_url + path
         if params:
