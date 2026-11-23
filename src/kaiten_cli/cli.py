@@ -247,12 +247,13 @@ def cards():
 @cards.command("view")
 @click.argument("reference")
 @click.option("--board", type=click.IntRange(min=1))
+@click.option("--with-related", is_flag=True, help="Include full fields for direct parent and child cards.")
 @click.option("--json", "command_json", is_flag=True)
 @click.pass_context
-def view(ctx, reference, board, command_json):
-    """Find a card by numeric ID or HTTPS URL, scanning only allowed boards."""
-    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(
-        reference, board_id=board, include_metadata=True))
+def view(ctx, reference, board, with_related, command_json):
+    """Read a card by ID or HTTPS URL and show its direct parents and children."""
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).view_card(
+        reference, board_id=board, with_related=with_related))
 
 
 @cards.command("search")

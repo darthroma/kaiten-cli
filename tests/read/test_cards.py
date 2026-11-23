@@ -92,19 +92,91 @@ def test_card_commands_include_safe_metadata(command, arguments, monkeypatch, fa
                    tags=[{**tag, 'private': 'hidden'}],
                    board={'id': 12, 'title': 'Доска', 'settings': {'token': 'hidden'}},
                    files=[{'url': 'https://example.invalid/signed'}], share_id='hidden')
-    adapter = KaitenAdapter(local_store, **fake_api({'/cards': [payload]}))
+    adapter = KaitenAdapter(local_store, **fake_api({
+        '/cards': [payload], '/cards/33': {**payload, 'parents': [], 'children': []},
+    }))
     monkeypatch.setattr(cli, 'KaitenAdapter', lambda store: adapter)
 
     result = CliRunner().invoke(cli.kaiten, ['cards', command, *arguments, '--board', '12', '--json'])
 
     assert result.exit_code == 0
-    assert json.loads(result.output)['data']['cards'] == [{
+    expected = {
         **{key: value for key, value in CARD.items() if key != 'members'},
         'condition': 2, 'archived': True, 'due_date': '2026-12-01',
         'members': [member, responsible], 'owner': owner, 'tags': [tag],
         'board': {'id': 12, 'title': 'Доска'},
-    }]
-    assert len(fake_api.calls()) == 1
+    }
+    if command == 'view':
+        expected.update(parents=[], children=[], relations_complete=True)
+    assert json.loads(result.output)['data']['cards'] == [expected]
+    assert len(fake_api.calls()) == (2 if command == 'view' else 1)
+
+
+@pytest.mark.parametrize('with_related', [False, True])
+def test_view_follows_parent_and_child_cards_across_allowed_boards(
+        with_related, monkeypatch, fake_api, local_store):
+    local_store.save(profile='test-profile', tenant='example.kaiten.ru', board_allowlist=[12, 34])
+    parent = {'id': 21, 'board_id': 34, 'title': 'Родитель', 'condition': 2, 'archived': True}
+    child = {'id': 44, 'board_id': 12, 'title': 'Дочерняя'}
+    hidden = {'id': 55, 'board_id': 99, 'title': 'Hidden title', 'description': 'Hidden text'}
+    member = {'id': 7, 'user_id': 7, 'full_name': 'Автор', 'type': 2}
+    adapter = KaitenAdapter(local_store, **fake_api({
+        '/cards': [CARD],
+        '/cards/33': {**CARD, 'parents': [parent], 'children': [child, hidden], 'children_ids': [44, 55]},
+        '/cards/21': {**parent, 'description': 'Описание родителя', 'parents': [hidden],
+                      'members': [{**member, 'email': 'private@example.invalid'}]},
+        '/cards/44': {**child, 'description': 'Описание дочерней'},
+    }))
+    monkeypatch.setattr(cli, 'KaitenAdapter', lambda store: adapter)
+    args = ['cards', 'view', 'https://example.kaiten.ru/space/2/boards/card/33', '--board', '12', '--json']
+    if with_related:
+        args.append('--with-related')
+
+    result = CliRunner().invoke(cli.kaiten, args)
+
+    assert result.exit_code == 0
+    card = json.loads(result.output)['data']['cards'][0]
+    assert card['description'] == CARD['description'] and card['relations_complete'] is False
+    if with_related:
+        parent.update(description='Описание родителя', members=[member])
+        child.update(description='Описание дочерней')
+    assert card['parents'] == [{**parent, 'url': 'https://example.kaiten.ru/boards/card/21'}]
+    assert card['children'] == [{**child, 'url': 'https://example.kaiten.ru/boards/card/44'}]
+    paths = ['/cards', '/cards/33']
+    if with_related:
+        paths.extend(['/cards/21', '/cards/44'])
+    assert [call['path'] for call in fake_api.calls()] == paths
+
+
+def test_view_can_open_an_archived_related_card(fake_api, local_store, monkeypatch):
+    archived = {**CARD, 'condition': 2, 'archived': True}
+    adapter = KaitenAdapter(local_store, **fake_api({
+        '/cards': [], '/cards/33': {**archived, 'parents': [], 'children': []},
+    }))
+    request = adapter._request
+
+    def archive_only(profile, method, path, *, params=None):
+        response = request(profile, method, path, params=params)
+        return [archived] if path == '/cards' and params.get('condition') == 2 else response
+
+    monkeypatch.setattr(adapter, '_request', archive_only)
+
+    card = adapter.view_card('33', board_id=12)['cards'][0]
+
+    assert card['archived'] is True and card['relations_complete'] is True
+    assert [call['params'].get('condition') for call in fake_api.calls()] == [None, ['2'], None]
+
+
+def test_view_with_related_marks_a_card_that_moved_outside_scope_incomplete(fake_api, local_store):
+    child = {'id': 44, 'board_id': 12, 'title': 'Дочерняя'}
+    adapter = KaitenAdapter(local_store, **fake_api({
+        '/cards': [CARD], '/cards/33': {**CARD, 'parents': [], 'children': [child]},
+        '/cards/44': {**child, 'board_id': 99, 'description': 'Hidden text'},
+    }))
+
+    card = adapter.view_card('33', board_id=12, with_related=True)['cards'][0]
+
+    assert card['children'] == [] and card['relations_complete'] is False
 
 
 @pytest.mark.parametrize('board,reply,code,count', [

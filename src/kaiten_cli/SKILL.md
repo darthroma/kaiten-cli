@@ -42,10 +42,20 @@ pass --board on subsequent card/comment/move commands to avoid broad searches. I
 ```sh
 kaiten cards search 'кастомные отчёты' --json
 kaiten cards view 456 --board 123 --json
+kaiten cards view 456 --board 123 --with-related --json
 kaiten cards archive --board 123 --json
 kaiten cards history 456 --board 123 --json
 kaiten comments list 456 --board 123 --json
 ```
+
+When the user needs a card's context, inspect `parents` and `children` from
+`cards view`. Both contain direct links, including archived cards. Use
+`--with-related` to read their descriptions and other card fields in the same
+response. To follow the chain farther, open each relevant result with
+`cards view <id> --board <board_id> --json` using its own board ID. Follow
+parents for the larger task and children for subtasks. Track visited IDs when
+tracing multiple levels. `relations_complete: false` means some links could
+not be shown, including cards outside the allowed boards.
 
 `boards info <ID>` returns columns and lanes. The restricted repair hatch is
 `request get /boards/<ID>/columns`, `/boards/<ID>/lanes`, or
