@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Archive and restore individual cards on allowed boards with previews and readback.
+- Require explicit consent when archiving may remove parent and child links.
+- Search cards by responsible user, member, tag, location, archive state and due date.
+
 ## 0.4.0
 
 - Edit card titles, descriptions and date-only deadlines on allowed boards.

@@ -79,7 +79,7 @@ def test_history_hides_disallowed_events_and_never_guesses_origin(fake_api, loca
 @pytest.mark.parametrize('board,reference,reply,code,count', [
     (99, '33', [], 'forbidden', 0),
     (12, 'текст', [], 'query_invalid', 0),
-    (12, '33', [], 'not_found', 1),
+    (12, '33', [], 'not_found', 2),
 ])
 def test_history_must_resolve_one_card_in_scope(board, reference, reply, code, count, fake_api, local_store):
     adapter = KaitenAdapter(local_store, **fake_api({'/cards': reply}))

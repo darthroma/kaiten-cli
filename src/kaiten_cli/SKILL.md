@@ -1,6 +1,6 @@
 ---
 name: kaiten-cli
-description: "Работай с карточками в Kaiten (Кайтен) через kaiten: создание, редактирование, чтение, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
+description: "Работай с карточками в Kaiten (Кайтен) через kaiten: поиск, создание, редактирование, архивация и восстановление, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
 ---
 
 # Kaiten CLI
@@ -66,8 +66,10 @@ Card read output includes members when returned by Kaiten. Match people by
 `user_id` (or `id`), using the name and username to confirm identity. Member
 `type: 1` is a participant and `type: 2` is the responsible person. For counts
 from results, filter the returned `members` arrays and check `complete`.
-`cards search` still matches card text and has no server-side assignee/member
-filter.
+Use `cards search` with `--responsible <user ID>`, `--member <user ID>`,
+`--tag`, `--column`, `--lane`, `--condition active|archived`, `--due-before`
+or `--due-after` (YYYY-MM-DD). Filters can be combined, with or without search
+text. Read `complete` before reporting counts.
 
 Use `cards history` for movement and archive events by card ID or URL.
 `archived_from` reports the location immediately preceding the last archive event
@@ -141,7 +143,26 @@ Only selected fields are sent in one PATCH, then read back. already-applied
 means no write was needed. Return the confirmed card/link; on an uncertain
 outcome inspect current state without automatically repeating the edit.
 Use move for location changes, files for attachments and comments for discussion.
-This edit command does not change responsible users, archive or delete cards.
+
+## Archive or restore a card
+
+Use `cards update <ID-or-URL> --archive` to send a single card to the archive
+or `--restore` to return it to its board. Use the same board scope, dry-run
+and authorization as other updates. Run either action separately from edits.
+`cards archive --board <ID>` lists archived cards.
+
+```sh
+kaiten cards update 456 --board 123 --archive --dry-run --json
+kaiten cards update 456 --board 123 --archive --authorization direct --json
+kaiten cards update 456 --board 123 --restore --authorization direct --json
+```
+
+Kaiten removes parent and child links when archiving a card from a queue or
+in-progress column. If `archive_context.may_remove_relations` is true, explain
+this effect, then pass `--allow-unlink` only when the user explicitly accepts
+it for that card. Restoring a card does not recreate removed links. If its old
+location has been removed, choose a new location in Kaiten. After any ambiguous
+write, inspect the card before attempting another change.
 
 ## Internal comments
 

@@ -4,7 +4,8 @@
 
 - Создание карточек с описанием, сроком и ответственным.
 - Редактирование названия, описания и срока карточки.
-- Чтение, поиск и просмотр архива карточек на выбранных досках.
+- Поиск по тексту, участникам, меткам, расположению, срокам и архивному состоянию.
+- Просмотр истории, отправка карточек в архив и восстановление из архива.
 - Внутренние комментарии с упоминанием коллег и вложениями.
 - Загрузка файлов прямо в карточку.
 - Перемещение карточек между колонками одной доски.
@@ -62,7 +63,11 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 kaiten cards view 12345 --board 456
 kaiten cards view 12345 --board 456 --with-related --json
 kaiten cards search 'Отчёт' --board 456
+kaiten cards search --board 456 --responsible 789 --condition active
 kaiten cards archive --board 456
+kaiten cards update 12345 --board 456 --archive --dry-run
+kaiten cards update 12345 --board 456 --archive --authorization direct
+kaiten cards update 12345 --board 456 --restore --authorization direct
 kaiten cards history 12345 --board 456
 kaiten boards info 456
 kaiten files upload 12345 --board 456 --file ./report.pdf --authorization direct
@@ -78,8 +83,9 @@ ID, название, доску и ссылку. `--with-related` добавл�
 `cards view <ID> --board <board_id>`, чтобы пройти на следующий уровень.
 `relations_complete: false` означает, что часть связей недоступна.
 
-CLI работает в пределах выбранных досок. Поиск по исполнителю, удаление
-карточек и перемещение между досками пока не поддерживаются.
+CLI работает в пределах выбранных досок. При архивации из очереди или работы
+Kaiten может удалить связи с родительскими и дочерними карточками. Если
+предпросмотр показывает этот эффект, для записи требуется `--allow-unlink`.
 
 [Настройки, обновление и автоматизация](docs/configuration.md) ·
 [Разработка](CONTRIBUTING.md)

@@ -66,6 +66,7 @@ uv tool install --reinstall "git+https://github.com/darthroma/kaiten-cli.git"
 ```sh
 kaiten cards view 12345 --board 456 --json
 kaiten cards search 'Отчёт' --board 456 --json
+kaiten cards search --board 456 --responsible 789 --condition active --json
 kaiten cards archive --board 456 --json
 kaiten cards history 12345 --board 456 --json
 kaiten boards info 456 --json
@@ -81,6 +82,11 @@ kaiten comments list 12345 --board 456 --json
 метки, автора, тип и расположение карточки, а также признак архива. В массиве
 `members` есть ID, имя, логин и роль пользователя. Значение `type: 1` обозначает
 участника, `type: 2` обозначает ответственного.
+
+Фильтры `cards search` можно сочетать между собой и с текстом. Для
+`--responsible`, `--member`, `--column` и `--lane` указывайте числовой ID,
+для `--tag` — название метки, для `--condition` — `active` или `archived`,
+для `--due-before` и `--due-after` — дату `YYYY-MM-DD`.
 
 `cards history` возвращает события перемещения от новых к старым. Код
 `condition: 2` обозначает архивное состояние. `archived_at` содержит время
@@ -239,7 +245,22 @@ kaiten cards update 12345 --board 456 --clear-due-date --authorization direct --
 Неопределённый результат — `mutation_ambiguous` с ненулевым кодом выхода;
 в `error.details` остаётся ID и ссылка. Автоматического повтора нет.
 Редактирование ограничено разрешёнными досками. Для перемещения используйте
-`move`, для файлов — `files`; изменение ответственного, архивирование
-и удаление этой командой не поддерживаются.
+`move`, для файлов — `files`.
+
+## Архивация и восстановление карточек
+
+```sh
+kaiten cards update 12345 --board 456 --archive --dry-run --json
+kaiten cards update 12345 --board 456 --archive --authorization direct --json
+kaiten cards update 12345 --board 456 --restore --authorization direct --json
+```
+
+Для `--archive` и `--restore` действуют те же правила предпросмотра,
+авторизации и проверки результата. Выполняйте эти действия отдельной командой.
+Kaiten удаляет родительские и дочерние связи при архивации из очереди или
+работы. Если `archive_context.may_remove_relations` равно `true`, добавьте
+`--allow-unlink` только при явном согласии на этот эффект. Восстановление
+возвращает карточку на доску, но не воссоздаёт удалённые связи. Если прежнее
+место исчезло, новое можно выбрать в Kaiten.
 
 [Официальный API редактирования карточек](https://developers.kaiten.ru/cards/update-card).
