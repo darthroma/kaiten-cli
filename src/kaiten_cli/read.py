@@ -11,6 +11,7 @@ from .policy import KaitenError, LocalConfigStore, load_policy, normalize_profil
 
 
 CARD_FIELDS = "id,title,board_id,column_id,lane_id,state,description"
+CARD_LINK_FIELDS = ("id", "title", "board_id", "archived", "condition")
 
 
 CARD_METADATA_FIELDS = (
@@ -147,6 +148,84 @@ class KaitenAdapter:
         boards = (board_id,) if board_id is not None else policy.board_allowlist
         filters = {"query": query} if card_id is None else {"ids": str(card_id)}
         return self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=include_metadata)
+
+    def view_card(self, reference: str, *, board_id: int | None = None, with_related=False):
+        policy = load_policy(self.store)
+        policy.assert_allowed("cards.read", board_id)
+        card_id = self._card_reference(reference, policy.tenant)
+        boards = (board_id,) if board_id is not None else policy.board_allowlist
+        if card_id is None:
+            if with_related:
+                raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL with --with-related.")
+            return self._list_cards(policy, boards, {"query": reference}, include_metadata=True)
+
+        filters = {"ids": str(card_id)}
+        result = self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=True)
+        if result["status"] == "empty":
+            result = self._list_cards(policy, boards, {**filters, "condition": 2},
+                                      card_id=card_id, include_metadata=True)
+        if not result["cards"]:
+            return result
+
+        card = result["cards"][0]
+        detail = self._card_detail(policy, card_id, card["board_id"])
+        parents, parents_complete = self._related_cards(policy, detail, "parents", with_related)
+        children, children_complete = self._related_cards(policy, detail, "children", with_related)
+        if load_policy(self.store) != policy:
+            raise KaitenError("policy_changed", "Local profile or board selection changed; retry the read.")
+        card.update(parents=parents, children=children, relations_complete=parents_complete and children_complete)
+        return result
+
+    def _card_detail(self, policy, card_id, board_id):
+        if load_policy(self.store) != policy:
+            raise KaitenError("policy_changed", "Local profile or board selection changed; retry the read.")
+        policy.assert_allowed("cards.read", board_id)
+        card = self._request(policy.profile, "GET", f"/cards/{card_id}")
+        if (not isinstance(card, dict) or type(card.get("id")) is not int
+                or card["id"] != card_id or not isinstance(card.get("title"), str)):
+            raise KaitenError("bad_json", "Kaiten API returned an invalid card identity.")
+        if type(card.get("board_id")) is not int or card["board_id"] != board_id:
+            raise KaitenError("forbidden", "Card board changed; no out-of-scope data is returned.")
+        return card
+
+    def _related_cards(self, policy, detail, direction, with_related):
+        related = detail.get(direction)
+        if not isinstance(related, list):
+            raise KaitenError("bad_json", "Kaiten API returned an invalid list of related cards.")
+        ids = detail.get(direction + "_ids")
+        if ids is not None and (not isinstance(ids, list) or any(type(item) is not int or item <= 0 for item in ids)):
+            raise KaitenError("bad_json", "Kaiten API returned invalid related card IDs.")
+
+        cards = {}
+        complete = True
+        for card in related:
+            if (not isinstance(card, dict) or type(card.get("id")) is not int or card["id"] <= 0
+                    or not isinstance(card.get("title"), str) or type(card.get("board_id")) is not int):
+                raise KaitenError("bad_json", "Kaiten API returned an invalid related card.")
+            card_id = card["id"]
+            if card["board_id"] not in policy.board_allowlist:
+                complete = False
+                continue
+            if card_id in cards:
+                continue
+            if with_related:
+                try:
+                    card = self._card_detail(policy, card_id, card["board_id"])
+                except KaitenError as exc:
+                    if exc.code in {"forbidden", "not_found"}:
+                        complete = False
+                        continue
+                    raise
+                selected = _scalar_fields(card, CARD_FIELDS.split(","))
+                selected.update(_card_metadata(card))
+            else:
+                selected = _scalar_fields(card, CARD_LINK_FIELDS)
+            cards[card_id] = {**selected, "url": f"https://{policy.tenant}/boards/card/{card_id}"}
+
+        count = detail.get(direction + "_count")
+        complete = (complete and all(card_id in cards for card_id in (ids or []))
+                    and (type(count) is not int or count <= len(cards)))
+        return list(cards.values()), complete
 
     def list_archived_cards(self, *, board_id: int):
         if type(board_id) is not int or board_id < 1:

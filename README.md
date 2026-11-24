@@ -60,6 +60,7 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 
 ```sh
 kaiten cards view 12345 --board 456
+kaiten cards view 12345 --board 456 --with-related --json
 kaiten cards search 'Отчёт' --board 456
 kaiten cards archive --board 456
 kaiten cards history 12345 --board 456
@@ -70,6 +71,12 @@ kaiten files upload 12345 --board 456 --file ./report.pdf --authorization direct
 Замените числа своими ID. Доступные команды — `kaiten --help`.
 Для скриптов добавляйте `--json`. В выводе `cards view`, `cards search` и
 `cards archive` доступны участники и их роли, сроки, метки и другие поля карточек.
+
+`cards view` показывает прямых родителей (`parents`) и детей (`children`):
+ID, название, доску и ссылку. `--with-related` добавляет описание и другие
+доступные поля каждой из этих карточек. Откройте нужную связь через
+`cards view <ID> --board <board_id>`, чтобы пройти на следующий уровень.
+`relations_complete: false` означает, что часть связей недоступна.
 
 CLI работает в пределах выбранных досок. Поиск по исполнителю, удаление
 карточек и перемещение между досками пока не поддерживаются.
