@@ -19,6 +19,9 @@ class NoRedirect(HTTPRedirectHandler):
 UID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 RESOURCE = rf"/[a-z]+(?:/(?:[a-z]+|[1-9][0-9]*|{UID}))*"
 FILE_TARGET = rf"/cards/{UID}(?:/comments/{UID})?/files"
+CARD_NUMBER = r"[1-9][0-9]*"
+CARD_RESOURCE = rf"/cards/{CARD_NUMBER}"
+CARD_DELETES = rf"{CARD_RESOURCE}/(?:(?:members|tags|children|blockers)/{CARD_NUMBER}|checklists/{CARD_NUMBER}(?:/items/{CARD_NUMBER})?)"
 
 
 class KaitenClient:
@@ -31,8 +34,10 @@ class KaitenClient:
     def request(self, method, path, *, params=None, body=None):
         resource = RESOURCE
         if method == "GET":
-            resource += r"|/cards/[1-9][0-9]*/location-history"
-        if method not in {"GET", "POST", "PATCH"} or not re.fullmatch(resource, path):
+            resource += rf"|{CARD_RESOURCE}/location-history|/card-types|/company/custom-properties"
+        elif method == "DELETE":
+            resource = CARD_DELETES
+        if method not in {"GET", "POST", "PATCH", "DELETE"} or not re.fullmatch(resource, path):
             raise KaitenError("request_invalid", "Use a supported relative API resource path.")
         url = self.base_url + path
         if params:
@@ -76,6 +81,8 @@ class KaitenClient:
             raise KaitenError("network", "Kaiten API request failed; no automatic retry was attempted.", {"retry_safe": False}) from exc
         if len(raw) > 16 * 1024 * 1024:
             raise KaitenError("response_too_large", "Kaiten response exceeded the 16 MiB limit.")
+        if status == 204 and not raw:
+            return None
         try:
             return json.loads(raw)
         except (ValueError, UnicodeError, RecursionError) as exc:

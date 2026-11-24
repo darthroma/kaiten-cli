@@ -12,22 +12,8 @@ class KaitenCreation(KaitenMutations):
     def _responsible(self, policy, query):
         if not isinstance(query, str) or not query.strip() or '\x00' in query:
             raise KaitenError('responsible_invalid', 'Select an exact full name, @username or user ID.')
-        users, seen = [], set()
-        for page in range(20):
-            batch = self._request(policy.profile, 'GET', '/users', params={'limit': 100, 'offset': page * 100})
-            if not isinstance(batch, list):
-                raise KaitenError('bad_json', 'Unexpected user directory response.')
-            for user in batch:
-                if (not isinstance(user, dict) or type(user.get('id')) is not int or user['id'] <= 0
-                        or user['id'] in seen or not isinstance(user.get('full_name'), str)
-                        or not isinstance(user.get('username'), str)):
-                    raise KaitenError('bad_json', 'Invalid or repeated user identity.')
-                seen.add(user['id'])
-                if user.get('activated') is not False:
-                    users.append({key: user[key] for key in ('id', 'full_name', 'username')})
-            if len(batch) < 100:
-                break
-        else:
+        users, complete = self._active_users(policy)
+        if not complete:
             raise KaitenError('incomplete', 'User directory is incomplete; no card was created.')
         key = _normalized(query.removeprefix('@'))
         matches = [user for user in users if (str(user['id']) == key if key.isdecimal()

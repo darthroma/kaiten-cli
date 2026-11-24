@@ -106,24 +106,24 @@ kaiten comments post 12345 --board 456 --text 'Готово' --mention 'Имя �
 Для комментария без упоминания используйте `--mention нет`. CLI отправляет только
 внутренние комментарии и проверяет автора, текст, новый ID и `internal=true`.
 
-Перемещение по точному запросу пользователя:
+Перемещение по точному запросу пользователя внутри доски или на другую
+разрешённую доску.
 
 ```sh
 kaiten move prepare 12345 --board 456 --column 789 --json
 kaiten move apply 12345 --board 456 --column 789 --authorization direct --json
+kaiten move prepare 12345 --board 456 --to-board 457 --column 790 --lane 91 --json
+kaiten move apply 12345 --board 456 --to-board 457 --column 790 --lane 91 --authorization direct --json
 ```
 
 Для предложения агента требуется согласие «перемещай» и подготовленный
-`--approval`. Полоска сохраняется, если не задана другая через `--lane`.
-Действия поддерживают `--dry-run`; разрешённое действие завершается записью и
-проверкой результата. Все записи выполняются один раз без автоматических
-повторов. Неопределённый результат требует чтения текущего состояния.
+`--approval`. При переносе внутри доски сохраняется текущая дорожка, если
+`--lane` опущен. При переносе на другую доску укажите `--lane`, если там
+несколько дорожек. CLI проверяет обе доски, отправляет один запрос и затем
+проверяет расположение карточки.
 
 `--json` возвращает одну запись `{ok,data,error}` и ненулевой код при ошибке.
 Поиски ограничены 20 страницами по 100 карточек на доску; проверяйте `complete`.
-Текстовый поиск не выбирает назначенные человеку задачи: фильтр исполнителя,
-участника или статуса пока отсутствует. Нет удаления, администрирования,
-перемещения между досками или внешних комментариев.
 
 
 ## Файлы и вложения
@@ -227,8 +227,10 @@ kaiten cards update 12345 --board 456 --clear-due-date --authorization direct --
 ```
 
 Укажите числовой ID или HTTPS-ссылку карточки в настроенном домене.
-Команда изменяет только переданные поля: `--title`, `--description`,
-`--due-date YYYY-MM-DD` либо `--clear-due-date`. Для очистки описания передайте
+Команда меняет переданные поля. Для названия, описания и срока используйте
+`--title`, `--description`, `--due-date YYYY-MM-DD` либо `--clear-due-date`.
+Для типа и пользовательских полей используйте `--type` и `--property`.
+Для очистки описания передайте
 `--description ''`. Описание заменяется целиком: для добавления пункта сначала
 прочитайте текущий текст и сохраните остальное содержимое. Неуказанные поля
 сохраняются. Нельзя одновременно задать и очистить срок.
@@ -264,3 +266,75 @@ Kaiten удаляет родительские и дочерние связи п
 место исчезло, новое можно выбрать в Kaiten.
 
 [Официальный API редактирования карточек](https://developers.kaiten.ru/cards/update-card).
+
+## Участники и поля карточки
+
+```sh
+kaiten users find 'Ирина' --json
+kaiten users find @username --json
+kaiten members list 12345 --board 456 --json
+kaiten members add 12345 @username --board 456 --authorization direct --json
+kaiten members assign 12345 @username --board 456 --authorization direct --json
+kaiten members remove 12345 37 --board 456 --authorization direct --json
+kaiten cards catalog types --json
+kaiten cards catalog properties --json
+kaiten cards update 12345 --board 456 --type 2 --property '9="Готово"' --property '10=null' --dry-run --json
+```
+
+Поиск по имени допускает частичное совпадение, по `@username` — точное. Для
+записи выберите точное имя, логин или ID. При назначении нового ответственного
+CLI сначала добавляет его в карточку. Если назначение прервётся после этого
+шага, результат `mutation_partial` покажет текущее членство. `members remove`
+удаляет выбранного участника вместе с ролью ответственного, если она у него была.
+
+`--type` принимает ID типа. Повторяемый `--property` принимает `ID=JSON`,
+где `null` очищает значение. Формат значения зависит от типа поля в Кайтене.
+
+## Метки, чек-листы, связи и блокировки
+
+```sh
+kaiten tags list 12345 --board 456 --json
+kaiten tags add 12345 'Срочно' --board 456 --authorization direct --json
+kaiten tags remove 12345 17 --board 456 --authorization direct --json
+kaiten checklists list 12345 --board 456 --json
+kaiten checklists add 12345 --board 456 --name 'Приёмка' --authorization direct --json
+kaiten checklists item-add 12345 --board 456 --checklist 24 --text 'Сверить суммы' --authorization direct --json
+kaiten checklists item-update 12345 --board 456 --checklist 24 --item 27 --checked --authorization direct --json
+kaiten relations add 12345 12346 --board 456 --child-board 457 --authorization direct --json
+kaiten blockers add 12345 --board 456 --reason 'Ожидаем данные' --authorization direct --json
+kaiten blockers list 12345 --board 456 --json
+kaiten blockers release 12345 --board 456 --block-id 31 --authorization direct --json
+```
+
+Для снятия связи используйте `relations remove` с теми же ID. `blockers add`
+и `blockers update` принимают `--blocker CARD [--blocker-board ID]` для
+зависимости от другой разрешённой карточки. `blockers update` требует
+`--block-id`. Для чек-листов предусмотрены `update`, `remove` и `item-remove`.
+`item-update` позволяет изменить текст, срок, ответственного и отметку выполнения.
+
+Любую из записей можно сначала проверить с `--dry-run`. Для согласованного
+предложения используйте `--authorization approved --approval <хеш>` и те же аргументы.
+
+## Массовые операции и отчёты
+
+```sh
+kaiten cards bulk-update 12345 12346 --archive --dry-run --json
+kaiten cards bulk-update 12345 12346 --archive --approval '<хеш>' --json
+kaiten cards bulk-update 12345 12346 --due-date 2026-12-07 --dry-run --json
+kaiten cards report --board 456 --kind responsible --json
+kaiten cards report --board 456 --kind overdue --as-of 2026-12-07 --json
+kaiten cards export --board 456 --condition active > cards.csv
+kaiten cards export 'Отчёт' --board 456 --responsible 37 --json
+```
+
+Массовая операция принимает до 100 уникальных ID или ссылок и те же поля, что
+`cards update`. Хеш привязан к списку, порядку, исходному состоянию и правкам.
+После первого сбоя команда прекращает запись и показывает результат по каждой
+карточке, включая `skipped`. Проверьте фактическое состояние перед новым запуском.
+
+В отчёт входят карточки на доске. Просрочка считается по дате: срок раньше
+выбранного дня и карточка ещё в очереди или в работе. `membership_unknown`
+показывает, для скольких карточек API не вернул участников. Проверяйте
+`complete` перед использованием сводки. Экспорт принимает фильтры `cards search`.
+CSV формируется только при полной выборке. Для просмотра частичного результата
+используйте `--json`.

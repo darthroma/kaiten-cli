@@ -1,6 +1,6 @@
 ---
 name: kaiten-cli
-description: "Работай с карточками в Kaiten (Кайтен) через kaiten: поиск, создание, редактирование, архивация и восстановление, внутренние комментарии, загрузка файлов и перемещение в пределах разрешённых досок."
+description: "Управляй карточками Кайтена через kaiten: поиск, создание, правки, архив, ответственные, метки, поля, чек-листы, связи, блокировки, переносы, массовые операции, отчёты и экспорт."
 ---
 
 # Kaiten CLI
@@ -164,6 +164,59 @@ it for that card. Restoring a card does not recreate removed links. If its old
 location has been removed, choose a new location in Kaiten. After any ambiguous
 write, inspect the card before attempting another change.
 
+## People and card fields
+
+`users find '<name or @username>' --json` searches the active user directory.
+For writes, pass one exact full name, @username or user ID. `members list CARD`
+shows the people already on a card. `members add CARD USER` adds a member,
+`members assign CARD USER` makes them responsible, and `members remove CARD
+USER` removes membership, including responsibility if they hold it. Assignment
+may add membership first. If status is `mutation_partial`, report the confirmed
+steps and current membership before any new request.
+
+`cards catalog types|properties` lists IDs. Use `cards update CARD --type ID`
+and repeatable `--property 'ID=JSON'`. JSON strings need double quotes inside
+the shell argument. Use `--property 'ID=null'` to clear. Set only requested fields.
+
+## Tags, checklists, links and blockers
+
+| Task | Command |
+| --- | --- |
+| Read, attach or detach tags | `tags list CARD`, `tags add CARD NAME`, `tags remove CARD TAG_ID` |
+| Read or change checklists | `checklists list CARD`, `checklists add CARD --name NAME`, `checklists update CARD --checklist ID --name NAME`, `checklists remove CARD --checklist ID` |
+| Create an item | `checklists item-add CARD --checklist ID --text TEXT` |
+| Edit or complete an item | `checklists item-update CARD --checklist ID --item ID --checked` |
+| Remove an item | `checklists item-remove CARD --checklist ID --item ID` |
+| Add or remove a parent–child link | `relations add PARENT CHILD`, `relations remove PARENT CHILD` |
+| Read blockers | `blockers list CARD` |
+| Block or edit a block | `blockers add CARD --reason TEXT` or `--blocker CARD`; for edits use `blockers update CARD --block-id ID` plus the changed reason or blocker |
+| Release a block | `blockers release CARD --block-id ID` |
+
+Checklist item edits also accept `--text`, `--unchecked`, `--due-date YYYY-MM-DD`,
+`--clear-due-date`, `--responsible USER_ID` and `--clear-responsible`. Use
+`--child-board` or `--blocker-board` for a known related board and `--board`
+for the primary card. All referenced cards must be on allowed boards.
+For writes, use `--dry-run` and the same `direct`/`approved` authorization as
+card updates. For removals, resolve IDs from the corresponding list or card
+view and make sure the user authorized the specific item or link.
+
+## Bulk updates, reports and exports
+
+`cards bulk-update CARD...` takes 1–100 distinct IDs or URLs and accepts the
+same edit and archive flags as `cards update`. Run with `--dry-run --json`,
+show the exact list and changes, then use its `--approval` after acceptance.
+Pass `--allow-unlink` only after explicit approval of the indicated loss of
+relations. The command stops at the first failure and reports each card,
+including skipped cards. Inspect results and prepare any approved follow-up
+for the remaining cards only.
+
+`cards report [--board ID] [--kind all|overdue|blocked|responsible] --json`
+summarizes active cards. Overdue means an unfinished card whose deadline date
+is before today or `--as-of YYYY-MM-DD`. `membership_unknown` counts cards whose
+member list was unavailable. Check `complete` before reporting totals.
+`cards export` accepts the search filters and writes CSV to stdout, or use
+`--json` for the structured results. CSV requires a complete selection.
+
 ## Internal comments
 
 Prepare the exact draft with `comments prepare <ID> --text '<text>' --json`.
@@ -224,7 +277,9 @@ Attachment readback verifies metadata, not remote byte-for-byte content.
 ## Moves
 
 Use `move prepare <ID> --column <ID> [--lane <ID>] --json` to resolve the source,
-allowed board topology and target. Omitted lane retains the current lane.
+allowed board topology and target. Omitted lane retains the current lane within
+one board. For a move to another allowed board use `--board SOURCE --to-board
+TARGET`. Supply the destination lane if that board has more than one.
 For an exact direct user request, use --authorization direct without another
 question. For your own proposal, show card/source/target, wait for the user's
 «перемещай», then apply with --authorization перемещай and the approved hash.
@@ -235,8 +290,7 @@ kaiten move prepare 456 --column 789 --json
 kaiten move apply 456 --column 789 --authorization перемещай --approval '<returned hash>' --json
 ```
 
-Only moves within the same allowed board are supported. Current location is
-read back after one PATCH. already-applied performs no write.
+Current location is read back after one PATCH. already-applied performs no write.
 
 ## Uncertain outcomes
 
@@ -245,5 +299,5 @@ after a write applied. mutation_ambiguous/mutation_not_applied return nonzero
 with readback in error.details and retry_safe:false. Do not repeat automatically;
 inspect current state and explain uncertainty. Separate runs are new writes:
 preview hashes bind inputs and credentials, not durable deduplication. Concurrent
-remote edits are not atomically prevented. Delete/admin/cross-board
+remote edits are not atomically prevented. Card deletion and administration
 commands are outside this CLI's supported scope.

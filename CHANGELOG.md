@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
+- Read archive history and direct parent/child cards.
 - Archive and restore individual cards on allowed boards with previews and readback.
 - Require explicit consent when archiving may remove parent and child links.
 - Search cards by responsible user, member, tag, location, archive state and due date.
+- Find users, manage members and assign responsible users on existing cards.
+- Edit card types and custom properties, and manage tags, checklists, links and blockers.
+- Move cards between allowed boards and preview exact bulk edits and archival.
+- Export searches to CSV or JSON and report overdue, blocked and assigned work.
 
 ## 0.4.0
 

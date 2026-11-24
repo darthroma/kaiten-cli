@@ -1,4 +1,4 @@
-"""Fixed internal-comment and same-board move workflows over the official API.
+"""Internal-comment and board-scoped move workflows over the official API.
 
 Preview hashes bind exact inputs; they are cooperative authorization guardrails,
 not credentials. A write is attempted once. Unknown outcomes never trigger retries.
@@ -49,6 +49,61 @@ class KaitenMutations(KaitenAdapter):
         policy.assert_allowed(action, card["board_id"])
         return policy, card
 
+    def _directory(self, policy, path, fields=None, *, params=None):
+        rows = {}
+        for page in range(20):
+            batch = self._request(policy.profile, "GET", path,
+                                  params={**(params or {}), "limit": 100, "offset": page * 100})
+            if not isinstance(batch, list) or len(batch) > 100:
+                raise KaitenError("bad_json", "Unexpected paginated catalog response.")
+            for row in batch:
+                if (not isinstance(row, dict) or type(row.get("id")) is not int
+                        or row["id"] <= 0 or row["id"] in rows):
+                    raise KaitenError("bad_json", "Catalog returned an invalid or repeated identity.")
+                rows[row["id"]] = row if fields is None else {
+                    key: row[key] for key in ("id", *fields)
+                    if key in row and type(row[key]) in (str, int, bool, type(None))}
+            if len(batch) < 100:
+                return list(rows.values()), True
+        return list(rows.values()), False
+
+    def _active_users(self, policy, *, params=None):
+        users, complete = self._directory(policy, "/users", ("full_name", "username", "activated"), params=params)
+        active = []
+        for user in users:
+            if not isinstance(user.get("full_name"), str) or not isinstance(user.get("username"), str):
+                raise KaitenError("bad_json", "Kaiten API user identity has an unexpected shape.")
+            if user.get("activated") is not False:
+                active.append({key: user[key] for key in ("id", "full_name", "username")})
+        return active, complete
+
+    @staticmethod
+    def _matching_users(query, users, *, exact):
+        if not isinstance(query, str) or not query.strip() or "\x00" in query:
+            raise KaitenError("user_invalid", "Supply an account name, @username or positive ID.")
+        query = query.strip()
+        key = _normalized(query.removeprefix("@"))
+        if not key:
+            raise KaitenError("user_invalid", "Supply a username after @.")
+        if query.startswith("@"):
+            return [user for user in users if key == _normalized(user["username"])]
+        if key.isdecimal():
+            return [user for user in users if key == str(user["id"])]
+        return [user for user in users if any(key == value if exact else key in value
+                for value in (_normalized(user["full_name"]), _normalized(user["username"])))]
+
+    def find_users(self, query):
+        self._matching_users(query, [], exact=False)
+        policy = load_policy(self.store)
+        policy.assert_allowed("cards.read")
+        self._verify_profile(policy.profile, policy.tenant)
+        value = query.strip().removeprefix("@")
+        params = {"ids": value} if query.strip().isdecimal() else {"query": value}
+        users, complete = self._active_users(policy, params=params)
+        if load_policy(self.store) != policy:
+            raise KaitenError("policy_changed", "Local profile changed during lookup.")
+        return {"users": self._matching_users(query, users, exact=False), "complete": complete}
+
     def prepare_comment(self, reference, text, *, mention=None, board_id=None):
         if not isinstance(text, str) or not text.strip() or "\x00" in text or len(text) > 4096:
             raise KaitenError("text_invalid", "Provide 1–4096 characters of comment text.")
@@ -65,30 +120,9 @@ class KaitenMutations(KaitenAdapter):
         if not isinstance(mention, str) or not mention.strip() or "\x00" in mention:
             raise KaitenError("mention_invalid", "Answer 'нет'/'none' or select an exact user name/account.")
         if _normalized(mention) not in {"нет", "none", "no"}:
-            data = []
-            seen = set()
-            for page in range(20):
-                batch = self._request(policy.profile, "GET", "/users", params={"limit": 100, "offset": page * 100})
-                if not isinstance(batch, list):
-                    raise KaitenError("bad_json", "Kaiten API user list has an unexpected shape.")
-                for user in batch:
-                    if not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] in seen:
-                        raise KaitenError("bad_json", "User pagination returned an invalid or repeated identity.")
-                    seen.add(user["id"])
-                data.extend(batch)
-                if len(batch) < 100:
-                    break
-            else:
+            users, complete = self._active_users(policy)
+            if not complete:
                 raise KaitenError("incomplete", "User directory pagination is incomplete; no mention can be resolved safely.")
-            users = []
-            for user in data:
-                if (not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] <= 0
-                        or not isinstance(user.get("full_name"), str)
-                        or not isinstance(user.get("username"), str)):
-                    raise KaitenError("bad_json", "Kaiten API user identity has an unexpected shape.")
-                if user.get("activated") is False:
-                    continue
-                users.append({key: user[key] for key in ("id", "full_name", "username")})
             query = _normalized(mention.removeprefix("@"))
             matches = [user for user in users if query in {_normalized(user["full_name"]), _normalized(user["username"])}]
             if len(matches) != 1:
@@ -173,12 +207,22 @@ class KaitenMutations(KaitenAdapter):
         self._verify_profile(policy.profile, policy.tenant)
         return {"board_id": board_id, **self._topology(policy, board_id)}
 
-    def prepare_move(self, reference, column_id, *, lane_id=None, board_id=None):
+    def prepare_move(self, reference, column_id, *, lane_id=None, board_id=None, to_board_id=None):
         if type(column_id) is not int or column_id <= 0 or (lane_id is not None and (type(lane_id) is not int or lane_id <= 0)):
             raise KaitenError("target_invalid", "Target column and lane IDs must be positive integers.")
+        if to_board_id is not None:
+            if type(to_board_id) is not int or to_board_id <= 0:
+                raise KaitenError("target_invalid", "Target board ID must be a positive integer.")
+            load_policy(self.store).assert_allowed("cards.move", to_board_id)
         policy, card = self._card(reference, board_id, "cards.move")
-        topology = self._topology(policy, card["board_id"])
-        lane_id = card["lane_id"] if lane_id is None else lane_id
+        target_board = card["board_id"] if to_board_id is None else to_board_id
+        policy.assert_allowed("cards.move", target_board)
+        topology = self._topology(policy, target_board)
+        if lane_id is None:
+            if target_board == card["board_id"]:
+                lane_id = card["lane_id"]
+            elif len(topology["lanes"]) == 1:
+                lane_id = topology["lanes"][0]["id"]
         column = next((item for item in topology["columns"] if item["id"] == column_id), None)
         lane = next((item for item in topology["lanes"] if item["id"] == lane_id), None)
         if column is None or lane is None:
@@ -186,15 +230,16 @@ class KaitenMutations(KaitenAdapter):
         if any(type(card[key]) is not int or card[key] <= 0 for key in ("column_id", "lane_id")):
             raise KaitenError("bad_json", "Current card location could not be verified.")
         preview = {"card": card, "source": {key: card[key] for key in ("board_id", "column_id", "lane_id")},
-                   "target": {"board_id": card["board_id"], "column": column, "lane": lane},
+                   "target": {"board_id": target_board, "column": column, "lane": lane},
                    "confirmation": "перемещай"}
         preview["approval"] = self._digest(policy, "move", preview)
         return preview
 
-    def apply_move(self, reference, column_id, *, lane_id=None, board_id=None, authorization=None, approval=None):
+    def apply_move(self, reference, column_id, *, lane_id=None, board_id=None, to_board_id=None,
+                   authorization=None, approval=None):
         if authorization not in {"direct", "перемещай"}:
             raise KaitenError("authorization_required", "Use direct only for an exact user request; proposals require 'перемещай' and the approved preview.")
-        preview = self.prepare_move(reference, column_id, lane_id=lane_id, board_id=board_id)
+        preview = self.prepare_move(reference, column_id, lane_id=lane_id, board_id=board_id, to_board_id=to_board_id)
         if authorization != "direct":
             _approve(preview["approval"], approval)
         target, card_id = preview["target"], preview["card"]["id"]
@@ -202,12 +247,30 @@ class KaitenMutations(KaitenAdapter):
         if preview["source"] == expected:
             return {"status": "already-applied", "attempts": 0, "retry_safe": False, "location": expected}
         policy = load_policy(self.store)
+        origin = preview["source"]
+        policy.assert_allowed("cards.move", origin["board_id"])
         policy.assert_allowed("cards.move", target["board_id"])
+        cross_board = origin["board_id"] != target["board_id"]
+        if cross_board:
+            self._verify_profile(policy.profile, policy.tenant)
+            current = self._card_detail(policy, card_id, origin["board_id"])
+            if any(current.get(key) != value for key, value in origin.items()):
+                raise KaitenError("preview_changed", "Card location changed before the move; prepare again.")
+            if load_policy(self.store) != policy:
+                raise KaitenError("policy_changed", "Local board selection changed; prepare again.")
         _approve(self._digest(policy, "move", {key: value for key, value in preview.items() if key != "approval"}), preview["approval"])
-        _, error = self._write_once(policy, "PATCH", f"/cards/{card_id}",
-                                   {"column_id": expected["column_id"], "lane_id": expected["lane_id"]})
+        payload = expected if cross_board else {key: expected[key] for key in ("column_id", "lane_id")}
+        _, error = self._write_once(policy, "PATCH", f"/cards/{card_id}", payload)
         try:
-            _, card = self._card(str(card_id), target["board_id"], "cards.read")
+            if cross_board:
+                if load_policy(self.store) != policy:
+                    raise KaitenError("policy_changed", "Local board selection changed after the move.")
+                result = self._find_card_including_archive(policy, (target["board_id"], origin["board_id"]), card_id)
+                if load_policy(self.store) != policy or not result["complete"] or not result["cards"]:
+                    raise KaitenError("readback_failed", "Card location could not be verified on either allowed board.")
+                card = result["cards"][0]
+            else:
+                _, card = self._card(str(card_id), target["board_id"], "cards.read")
             location = {key: card[key] for key in expected}
         except KaitenError as exc:
             return self._outcome("ambiguous", error=error or exc, card_id=card_id, readback=False)

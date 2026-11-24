@@ -21,7 +21,8 @@ from test_full_e2e import installed_surface
 def editing_api():
     state = dict(calls=[], card=dict(id=33, title='Задача', board_id=12, column_id=4, lane_id=5,
         state=1, condition=1, parents_count=0, children_count=0,
-        description='Описание', due_date='2026-10-15T00:00:00.000Z', due_date_time_present=False),
+        description='Описание', due_date='2026-10-15T00:00:00.000Z', due_date_time_present=False,
+        type_id=1, properties={'id_2': 'keep'}),
         status=200, apply=True, readback_status=200, readback_override={}, detail_count=0, change_at=None, readback_from_patch=1)
 
     class Handler(BaseHTTPRequestHandler):
@@ -50,9 +51,11 @@ def editing_api():
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             state['calls'].append(('PATCH', path, body))
             assert path == '/cards/33' and self.headers['Authorization'] == 'Bearer synthetic-edit'
-            assert body and set(body) <= {'title','description','due_date','due_date_time_present','condition'}
+            assert body and set(body) <= {'title','description','due_date','due_date_time_present','condition','type_id','properties'}
             if state['status'] < 400 and state['apply']:
-                state['card'].update(body)
+                if 'properties' in body:
+                    state['card']['properties'].update(body['properties'])
+                state['card'].update({key: value for key, value in body.items() if key != 'properties'})
                 if state['card']['description'] == '': state['card']['description'] = None
                 if 'due_date' in body and body['due_date'] is not None:
                     state['card']['due_date'] += 'T00:00:00.000Z'
@@ -285,3 +288,10 @@ runpy.run_path(binary,run_name='__main__')
             result = invoke(*args, '--authorization', 'approved', '--approval', preview['approval'])
             assert result['data']['status'] == 'applied' and result['data']['card']['condition'] == condition
         assert len(patches(state)) == 4
+        bulk = ('cards', 'bulk-update', '33', '--board', '12', '--type', '2', '--property', '3="test"')
+        preview = invoke(*bulk, '--dry-run')['data']
+        result = invoke(*bulk, '--approval', preview['approval'])['data']
+        assert result['cards'][0]['status'] == 'applied'
+        assert state['card']['properties'] == {'id_2': 'keep', 'id_3': 'test'}
+        assert invoke('cards', 'report', '--board', '12')['data']['total'] == 1
+        assert invoke('cards', 'export', '--board', '12')['data']['cards'][0]['type_id'] == 2
