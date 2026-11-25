@@ -38,6 +38,8 @@ def fake_api(tmp_path, monkeypatch):
             calls.append(call)
             key = (request.method, call['path'], call['params'].get('offset', ['0'])[0])
             reply = responses.get(key, responses.get(call['path']))
+            if callable(reply):
+                reply = reply(call['params'])
             assert reply is not None, call
             if isinstance(reply, Exception):
                 raise reply

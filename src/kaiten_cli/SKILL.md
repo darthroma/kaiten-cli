@@ -66,10 +66,28 @@ Card read output includes members when returned by Kaiten. Match people by
 `user_id` (or `id`), using the name and username to confirm identity. Member
 `type: 1` is a participant and `type: 2` is the responsible person. For counts
 from results, filter the returned `members` arrays and check `complete`.
+`owner_id` identifies the current card requester. Use `cards view --with-creator`
+to verify the original creator from the creation event. Supply repeatable
+`--activity-space <ID>` or use a card URL containing `/space/ID/`. Include the
+original space if the card moved. `creator_status: unknown` means the creator
+could not be verified.
+
 Use `cards search` with `--responsible <user ID>`, `--member <user ID>`,
 `--tag`, `--column`, `--lane`, `--condition active|archived`, `--due-before`
-or `--due-after` (YYYY-MM-DD). Filters can be combined, with or without search
-text. Read `complete` before reporting counts.
+or `--due-after` (YYYY-MM-DD). `--created-after` uses a strict ISO 8601 timestamp
+with time zone. Repeat `--board` for a specific set of boards. `--compact --json`
+returns IDs, count, and completeness per board. If a board read fails, partial
+results are in `error.details` with a nonzero exit code.
+
+For active cards use `cards audit-relations --board ID --json` to check direct
+parents. Repeat `--board` to check several boards. Add `--ancestor-board ID`
+to search parent chains and `--created-after TIMESTAMP` to limit the selection.
+When filtering by creator, supply `--creator USER_ID --activity-space SPACE_ID`.
+Use `missing_parent` for confirmed missing direct parents. `ancestor_missing`
+identifies a chain that does not reach the required board, with `rootless_ids`
+showing where a branch ended. `incomplete` includes a reason and means the
+verdict is unknown. Review `complete` at both report and card level before
+using the result in an automation.
 
 Use `cards history` for movement and archive events by card ID or URL.
 `archived_from` reports the location immediately preceding the last archive event

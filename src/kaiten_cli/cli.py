@@ -11,6 +11,7 @@ import click
 
 from .policy import KaitenError, LocalConfigStore, normalize_profile, normalize_tenant
 from .read import KaitenAdapter
+from .audit import KaitenAudit
 from .mutations import KaitenMutations
 from .files import KaitenFiles
 from .creation import KaitenCreation
@@ -256,17 +257,22 @@ def cards():
 @click.argument("reference")
 @click.option("--board", type=click.IntRange(min=1))
 @click.option("--with-related", is_flag=True, help="Include full fields for direct parent and child cards.")
+@click.option("--with-creator", is_flag=True, help="Verify the creation event in a space activity log.")
+@click.option("--activity-space", "activity_spaces", type=click.IntRange(min=1), multiple=True,
+              help="Space ID for creator verification. Repeat if the card moved across spaces.")
 @click.option("--json", "command_json", is_flag=True)
 @click.pass_context
-def view(ctx, reference, board, with_related, command_json):
+def view(ctx, reference, board, with_related, with_creator, activity_spaces, command_json):
     """Read a card by ID or HTTPS URL and show its direct parents and children."""
     _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).view_card(
-        reference, board_id=board, with_related=with_related))
+        reference, board_id=board, with_related=with_related, with_creator=with_creator,
+        activity_spaces=activity_spaces))
 
 
 def _search_options(function):
     for decorator in (
         click.option("--json", "command_json", is_flag=True),
+        click.option("--created-after", help="Only cards created strictly after this ISO 8601 timestamp with a time zone."),
         click.option("--due-after", type=click.DateTime(formats=["%Y-%m-%d"])),
         click.option("--due-before", type=click.DateTime(formats=["%Y-%m-%d"])),
         click.option("--condition", type=click.Choice(["active", "archived"])),
@@ -275,7 +281,7 @@ def _search_options(function):
         click.option("--tag", help="Tag name."),
         click.option("--member", "member_id", type=click.IntRange(min=1), help="Card member user ID."),
         click.option("--responsible", "responsible_id", type=click.IntRange(min=1), help="Responsible user ID."),
-        click.option("--board", type=click.IntRange(min=1)),
+        click.option("--board", type=click.IntRange(min=1), multiple=True, help="Repeat to select several boards."),
         click.argument("query", required=False),
     ):
         function = decorator(function)
@@ -284,7 +290,7 @@ def _search_options(function):
 
 def _search_cards(ctx, query, *, board, condition, due_before, due_after, **filters):
     return KaitenAdapter(_store(ctx)).find_cards(
-        query, board_id=board, include_metadata=True,
+        query, board_ids=board, include_metadata=True,
         condition={"active": 1, "archived": 2}.get(condition),
         due_before=due_before.date().isoformat() if due_before else None,
         due_after=due_after.date().isoformat() if due_after else None, **filters)
@@ -292,10 +298,36 @@ def _search_cards(ctx, query, *, board, condition, due_before, due_after, **filt
 
 @cards.command("search")
 @_search_options
+@click.option("--compact", is_flag=True, help="Return only IDs, count and completeness for each board.")
 @click.pass_context
-def search(ctx, query, command_json, **options):
+def search(ctx, query, command_json, compact, **options):
     """Find cards by text, ID/URL, or filters inside permitted boards."""
-    _present(ctx, command_json, lambda: _search_cards(ctx, query, **options))
+    def operation():
+        result = _search_cards(ctx, query, compact=compact, **options)
+        return _board_read_result(result) if compact else result
+    _present(ctx, command_json, operation)
+
+
+def _board_read_result(result):
+    if any("error" in board for board in result["boards"]):
+        raise KaitenError("incomplete", "Some boards could not be read; see per-board results.", result)
+    return result
+
+
+@cards.command("audit-relations")
+@click.option("--board", "board_ids", type=click.IntRange(min=1), required=True, multiple=True,
+              help="Board with candidate cards. Repeat for several boards.")
+@click.option("--ancestor-board", "ancestor_boards", type=click.IntRange(min=1), multiple=True,
+              help="Require an ancestor on any of these boards. Repeat for several boards.")
+@click.option("--created-after", help="Only cards created strictly after this ISO 8601 timestamp with a time zone.")
+@click.option("--creator", "creator_id", type=click.IntRange(min=1), help="Require a verified creator user ID.")
+@click.option("--activity-space", "activity_spaces", type=click.IntRange(min=1), multiple=True,
+              help="Space ID for creator verification. Repeat for several spaces.")
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def audit_relations(ctx, command_json, **options):
+    """Check direct parents or ancestor chains for active cards on selected boards."""
+    _present(ctx, command_json, lambda: _board_read_result(KaitenAudit(_store(ctx)).audit_relations(**options)))
 
 
 @cards.command("export")
