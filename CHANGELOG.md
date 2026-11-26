@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- Verify card creators against space activity with `cards view --with-creator`.
+- Search multiple boards by creation time and return compact per-board results.
+- Audit active cards for missing direct parents or missing ancestors on selected boards.
+
 ## 0.5.0
 
 - Read archive history and direct parent/child cards.
