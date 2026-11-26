@@ -257,15 +257,16 @@ def cards():
 @click.argument("reference")
 @click.option("--board", type=click.IntRange(min=1))
 @click.option("--with-related", is_flag=True, help="Include full fields for direct parent and child cards.")
+@click.option("--with-links", is_flag=True, help="Resolve the space links for the card and its direct relations.")
 @click.option("--with-creator", is_flag=True, help="Verify the creation event in a space activity log.")
 @click.option("--activity-space", "activity_spaces", type=click.IntRange(min=1), multiple=True,
               help="Space ID for creator verification. Repeat if the card moved across spaces.")
 @click.option("--json", "command_json", is_flag=True)
 @click.pass_context
-def view(ctx, reference, board, with_related, with_creator, activity_spaces, command_json):
+def view(ctx, reference, board, with_related, with_links, with_creator, activity_spaces, command_json):
     """Read a card by ID or HTTPS URL and show its direct parents and children."""
     _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).view_card(
-        reference, board_id=board, with_related=with_related, with_creator=with_creator,
+        reference, board_id=board, with_related=with_related, with_links=with_links, with_creator=with_creator,
         activity_spaces=activity_spaces))
 
 
@@ -323,11 +324,39 @@ def _board_read_result(result):
 @click.option("--creator", "creator_id", type=click.IntRange(min=1), help="Require a verified creator user ID.")
 @click.option("--activity-space", "activity_spaces", type=click.IntRange(min=1), multiple=True,
               help="Space ID for creator verification. Repeat for several spaces.")
+@click.option("--with-links", is_flag=True, help="Include verified space links for the reported cards.")
 @click.option("--json", "command_json", is_flag=True)
 @click.pass_context
 def audit_relations(ctx, command_json, **options):
     """Check direct parents or ancestor chains for active cards on selected boards."""
     _present(ctx, command_json, lambda: _board_read_result(KaitenAudit(_store(ctx)).audit_relations(**options)))
+
+
+@kaiten.group("links")
+def links():
+    """Resolve shareable links to Kaiten cards and spaces."""
+
+
+@links.command("card")
+@click.argument("reference")
+@click.option("--board", "board_id", type=click.IntRange(min=1), help="Known board of the card.")
+@click.option("--space", "space_id", type=click.IntRange(min=1), help="Select and verify a specific space for the card.")
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def link_card(ctx, reference, board_id, space_id, command_json):
+    """Resolve the current space link for a card ID or URL."""
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).card_link(
+        reference, board_id=board_id, space_id=space_id), format_text=lambda result: result["url"] + "\n")
+
+
+@links.command("space")
+@click.argument("space_id", type=click.IntRange(min=1))
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def link_space(ctx, space_id, command_json):
+    """Verify a space ID and return its boards URL."""
+    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).space_link(space_id),
+             format_text=lambda result: result["url"] + "\n")
 
 
 @cards.command("export")

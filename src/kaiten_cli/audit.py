@@ -8,7 +8,7 @@ from .read import KaitenAdapter, _timestamp
 
 class KaitenAudit(KaitenAdapter):
     def audit_relations(self, *, board_ids, ancestor_boards=(), created_after=None,
-                        creator_id=None, activity_spaces=()):
+                        creator_id=None, activity_spaces=(), with_links=False):
         policy = load_policy(self.store)
         boards = self._allowed_boards(policy, board_ids)
         for board in ancestor_boards:
@@ -36,6 +36,14 @@ class KaitenAudit(KaitenAdapter):
                                        created_after, creator_id, activity_spaces)
                 if row is not None:
                     rows.append(row)
+        if with_links:
+            # Cards that failed readback have no verified current location.
+            placements = self._board_spaces(policy, {row["board_id"] for row in rows if "created" in row})
+            for row in rows:
+                if "created" in row:
+                    row.update(self._card_link_fields(policy, row, placements))
+                else:
+                    row.update(url=None, space_id=None, link_reason="location_unverified")
         self._check_policy(policy)
         complete = selection["complete"] and all(row["complete"] for row in rows)
         return {"boards": selection["boards"], "cards": rows, "complete": complete}
