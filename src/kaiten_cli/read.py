@@ -2,7 +2,7 @@
 
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from .auth import CredentialStore
@@ -74,6 +74,16 @@ def _card_metadata(card):
     return metadata
 
 
+def _timestamp(value):
+    try:
+        timestamp = datetime.fromisoformat(value)
+        if timestamp.tzinfo is not None:
+            return timestamp.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return None
+
+
 class KaitenAdapter:
     def __init__(self, store: LocalConfigStore | None = None, *, credentials=None, client_factory=None):
         self.store = store or LocalConfigStore()
@@ -141,34 +151,79 @@ class KaitenAdapter:
             topology[resource] = items
         return topology
 
-    def find_cards(self, query: str | None, *, board_id: int | None = None, include_metadata=False,
+    def _allowed_boards(self, policy, board_ids):
+        boards = tuple(dict.fromkeys(board_ids)) or policy.board_allowlist
+        policy.assert_allowed("cards.read")
+        for board in boards:
+            policy.assert_allowed("cards.read", board)
+        return boards
+
+    def find_cards(self, query: str | None, *, board_id: int | None = None, board_ids=(), include_metadata=False,
                    responsible_id=None, member_id=None, tag=None, column_id=None, lane_id=None,
-                   condition=None, due_before=None, due_after=None):
+                   condition=None, due_before=None, due_after=None, created_after=None, compact=False):
         policy = load_policy(self.store)
-        policy.assert_allowed("cards.read", board_id)
+        boards = self._allowed_boards(policy, (board_id,) if board_id is not None else board_ids)
+        created_after = self._created_filter(created_after)
         filters = {key: value for key, value in {
             "responsible_id": responsible_id, "member_ids": member_id, "tag": tag,
             "column_id": column_id, "lane_id": lane_id, "condition": condition,
             "due_date_before": due_before, "due_date_after": due_after,
         }.items() if value is not None}
+        if created_after is not None:
+            filters["created_after"] = created_after.isoformat()
         if query is None and not filters:
             raise KaitenError("query_invalid", "Provide a search query or at least one card filter.")
         card_id = None
         if query is not None:
             card_id = self._card_reference(query, policy.tenant)
             filters.update({"query": query} if card_id is None else {"ids": str(card_id)})
-        boards = (board_id,) if board_id is not None else policy.board_allowlist
-        return self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=include_metadata)
+        if compact:
+            return self._compact_cards(policy, boards, filters, card_id=card_id, created_after=created_after)
+        return self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=include_metadata,
+                                created_after=created_after)
 
-    def view_card(self, reference: str, *, board_id: int | None = None, with_related=False):
+    @staticmethod
+    def _created_filter(value):
+        if value is None:
+            return None
+        timestamp = _timestamp(value)
+        if timestamp is None:
+            raise KaitenError("query_invalid", "Use an ISO 8601 creation timestamp with a time zone.")
+        return timestamp
+
+    def _compact_cards(self, policy, boards, filters, *, card_id=None, created_after=None):
+        summaries = []
+        for board in boards:
+            summary = {"board_id": board, "card_ids": [], "count": 0, "complete": False}
+            try:
+                page = self._list_cards(policy, (board,), filters, card_id=card_id, include_metadata=False,
+                                        created_after=created_after, lean=True)
+                card_ids = [card["id"] for card in page["cards"]]
+                summary.update(card_ids=card_ids, count=len(card_ids), complete=page["complete"])
+            except KaitenError as exc:
+                if exc.code == "policy_changed":
+                    raise
+                summary["error"] = exc.code
+            summaries.append(summary)
+        self._check_policy(policy)
+        return {"boards": summaries, "complete": all(board["complete"] for board in summaries)}
+
+    def view_card(self, reference: str, *, board_id: int | None = None, with_related=False,
+                  with_creator=False, activity_spaces=()):
         policy = load_policy(self.store)
         policy.assert_allowed("cards.read", board_id)
         card_id = self._card_reference(reference, policy.tenant)
         boards = (board_id,) if board_id is not None else policy.board_allowlist
+        with_creator = with_creator or bool(activity_spaces)
         if card_id is None:
-            if with_related:
-                raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL with --with-related.")
+            if with_related or with_creator:
+                raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL for related cards or creator.")
             return self._list_cards(policy, boards, {"query": reference}, include_metadata=True)
+        if with_creator and not activity_spaces:
+            match = re.match(r"/space/([1-9][0-9]*)/", urlsplit(reference).path)
+            if not match:
+                raise KaitenError("query_invalid", "Pass --activity-space or a card URL containing /space/ID/.")
+            activity_spaces = (int(match.group(1)),)
 
         result = self._find_card_including_archive(policy, boards, card_id)
         if not result["cards"]:
@@ -178,10 +233,59 @@ class KaitenAdapter:
         detail = self._card_detail(policy, card_id, card["board_id"])
         parents, parents_complete = self._related_cards(policy, detail, "parents", with_related)
         children, children_complete = self._related_cards(policy, detail, "children", with_related)
-        if load_policy(self.store) != policy:
-            raise KaitenError("policy_changed", "Local profile or board selection changed; retry the read.")
         card.update(parents=parents, children=children, relations_complete=parents_complete and children_complete)
+        if with_creator:
+            card.update(self._card_creator(policy, detail, activity_spaces))
+        self._check_policy(policy)
         return result
+
+    def _card_creator(self, policy, card, spaces):
+        created = _timestamp(card.get("created"))
+        if created is None:
+            return {"creator_id": None, "creator_status": "unknown", "creator_reason": "creation_time_missing"}
+        authors = set()
+        reason = "no_creation_event"
+        for space in dict.fromkeys(spaces):
+            self._check_policy(policy)
+            try:
+                authors.update(self._creation_authors(policy, space, card["id"], created))
+            except KaitenError as exc:
+                if exc.code == "policy_changed":
+                    raise
+                reason = exc.code
+        if len(authors) == 1:
+            return {"creator_id": authors.pop(), "creator_status": "verified"}
+        if authors:
+            reason = "conflicting_creation_events"
+        return {"creator_id": None, "creator_status": "unknown", "creator_reason": reason}
+
+    def _creation_authors(self, policy, space, card_id, created):
+        params = {"actions": "card_add", "limit": 100, "created_after": created.isoformat(),
+                  "created_before": created.isoformat()}
+        authors = set()
+        cursors = set()
+        for _ in range(20):
+            self._check_policy(policy)
+            page = self._request(policy.profile, "GET", f"/spaces/{space}/activity", params=params)
+            if not isinstance(page, dict) or not isinstance(page.get("items"), list) or "next_cursor" not in page:
+                raise KaitenError("bad_json", "Kaiten API returned an invalid activity page.")
+            for event in page["items"]:
+                if not isinstance(event, dict):
+                    raise KaitenError("bad_json", "Kaiten API returned an invalid activity event.")
+                if (event.get("action") == "card_add" and type(event.get("card_id")) is int
+                        and event["card_id"] == card_id and event.get("space_id") in (None, space)
+                        and type(event.get("board_id")) is int and event["board_id"] in policy.board_allowlist
+                        and _timestamp(event.get("created")) == created
+                        and type(event.get("author_id")) is int and event["author_id"] > 0):
+                    authors.add(event["author_id"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                return authors
+            if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise KaitenError("bad_json", "Kaiten API returned an invalid activity cursor.")
+            cursors.add(cursor)
+            params["cursor"] = cursor
+        raise KaitenError("page_limit", "Kaiten activity exceeded the page limit.")
 
     def _find_card_including_archive(self, policy, boards, card_id):
         filters = {"ids": str(card_id)}
@@ -191,9 +295,12 @@ class KaitenAdapter:
                                     card_id=card_id, include_metadata=True)
         return result
 
-    def _card_detail(self, policy, card_id, board_id):
+    def _check_policy(self, policy):
         if load_policy(self.store) != policy:
             raise KaitenError("policy_changed", "Local profile or board selection changed; retry the read.")
+
+    def _card_detail(self, policy, card_id, board_id):
+        self._check_policy(policy)
         policy.assert_allowed("cards.read", board_id)
         card = self._request(policy.profile, "GET", f"/cards/{card_id}")
         if (not isinstance(card, dict) or type(card.get("id")) is not int
@@ -317,15 +424,19 @@ class KaitenAdapter:
                     location[name + "_title"] = title
         return location
 
-    def _list_cards(self, policy, boards, filters, *, include_metadata, card_id=None):
+    def _list_cards(self, policy, boards, filters, *, include_metadata, card_id=None, created_after=None, lean=False):
         self._verify_profile(policy.profile, policy.tenant)
         cards = []
+        seen_ids = set()
         complete = True
         condition = filters.get("condition")
         for board in boards:
             for page in range(20):
-                params = {"board_id": board, "limit": 100, "offset": page * 100,
-                          "additional_card_fields": "description", **filters}
+                if lean:
+                    self._check_policy(policy)
+                params = {"board_id": board, "limit": 100, "offset": page * 100, **filters}
+                if not lean:
+                    params["additional_card_fields"] = "description"
                 data = self._request(policy.profile, "GET", "/cards", params=params)
                 if not isinstance(data, list):
                     raise KaitenError("bad_json", "Kaiten API card list has an unexpected shape.")
@@ -337,14 +448,22 @@ class KaitenAdapter:
                     if condition is not None and (type(card.get("condition")) is not int
                                                   or card["condition"] != condition):
                         raise KaitenError("bad_json", "Kaiten API returned a card outside the requested condition.")
-                    if (card_id is None or card["id"] == card_id) and not any(
-                            item["id"] == card["id"] for item in cards):
-                        selected = {key: card.get(key) for key in CARD_FIELDS.split(",")}
+                    if created_after is not None:
+                        created = _timestamp(card.get("created"))
+                        if created is None:
+                            complete = False
+                            continue
+                        if created <= created_after:
+                            continue
+                    if (card_id is None or card["id"] == card_id) and card["id"] not in seen_ids:
+                        seen_ids.add(card["id"])
+                        fields = ("id", "board_id") if lean else CARD_FIELDS.split(",")
+                        selected = {key: card.get(key) for key in fields}
                         if include_metadata:
                             selected.update(_card_metadata(card))
                         cards.append(selected)
                 if card_id is not None and cards:
-                    return {"status": "found", "cards": cards, "complete": True}
+                    return {"status": "found", "cards": cards, "complete": complete}
                 if len(data) < 100:
                     break
             else:

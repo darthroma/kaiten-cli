@@ -65,8 +65,11 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 ```sh
 kaiten cards view 12345 --board 456
 kaiten cards view 12345 --board 456 --with-related --json
+kaiten cards view 12345 --board 456 --with-creator --activity-space 111 --json
 kaiten cards search 'Отчёт' --board 456
 kaiten cards search --board 456 --responsible 789 --condition active
+kaiten cards search --board 456 --board 457 --condition active --created-after 2026-11-24T07:13:35Z --compact --json
+kaiten cards audit-relations --board 456 --ancestor-board 458 --creator 789 --activity-space 111 --created-after 2026-11-24T07:13:35Z --json
 kaiten cards archive --board 456
 kaiten cards update 12345 --board 456 --archive --dry-run
 kaiten cards update 12345 --board 456 --archive --authorization direct
@@ -90,6 +93,29 @@ ID, название, доску и ссылку. `--with-related` добавл�
 доступные поля каждой из этих карточек. Откройте нужную связь через
 `cards view <ID> --board <board_id>`, чтобы пройти на следующий уровень.
 `relations_complete: false` означает, что часть связей недоступна.
+
+`cards search --compact` возвращает ID, число совпадений и `complete` для
+каждой выбранной доски. `--created-after` принимает ISO 8601 с часовым поясом
+и включает карточки, созданные строго позже указанного времени. Если запрос
+к доске завершился ошибкой, команда возвращает ненулевой код, а результаты по
+доскам доступны в `error.details`.
+
+`cards audit-relations` проверяет активные карточки. С `--ancestor-board`
+команда ищет предка на одной из указанных досок, включая архивных предков.
+`missing_parent` подтверждает пустой список прямых родителей.
+`ancestor_found` содержит путь из ID, `ancestor_missing` содержит ID карточек,
+на которых цепочки закончились. При неполном чтении или неподтверждённом
+создателе строка получает `status: incomplete` и причину. `boards[].count`
+показывает число найденных активных карточек до проверки создателя и связей.
+`boards[].complete` относится к выборке карточек, а общий `complete` учитывает
+и результаты аудита.
+
+`cards view --with-creator` и `cards audit-relations --creator` проверяют
+событие создания в журнале пространства. Для `view` пространство можно взять
+из ссылки `/space/ID/boards/card/ID`. Передайте `--activity-space` с ID
+исходного пространства, если после создания карточку перенесли. `creator_id`
+подтверждается только по событию на разрешённой доске. При отсутствии
+доступного события `creator_id` равен `null`.
 
 CLI работает в пределах выбранных досок. При архивации из очереди или работы
 Kaiten может удалить связи с родительскими и дочерними карточками. Если
