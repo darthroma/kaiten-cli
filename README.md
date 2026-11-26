@@ -65,7 +65,10 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 ```sh
 kaiten cards view 12345 --board 456
 kaiten cards view 12345 --board 456 --with-related --json
+kaiten cards view 12345 --board 456 --with-links --json
 kaiten cards view 12345 --board 456 --with-creator --activity-space 111 --json
+kaiten links card 12345 --board 456
+kaiten links space 111
 kaiten cards search 'Отчёт' --board 456
 kaiten cards search --board 456 --responsible 789 --condition active
 kaiten cards search --board 456 --board 457 --condition active --created-after 2026-11-24T07:13:35Z --compact --json
@@ -93,6 +96,16 @@ ID, название, доску и ссылку. `--with-related` добавл�
 доступные поля каждой из этих карточек. Откройте нужную связь через
 `cards view <ID> --board <board_id>`, чтобы пройти на следующий уровень.
 `relations_complete: false` означает, что часть связей недоступна.
+
+`links card` возвращает ссылку вида `https://<tenant>/space/<space_id>/boards/card/<card_id>`.
+CLI проверяет текущую доску карточки и её размещение. Если доска есть в нескольких
+пространствах, CLI выбирает основное. Если его нельзя определить, выберите пространство
+через `--space <ID>`. `links space` проверяет ID и возвращает ссылку на доски этого
+пространства. С `--json` берите ссылку из `data.url`.
+
+Флаг `--with-links` добавляет ссылки в `cards view` для карточки, родителей и детей,
+а в `cards audit-relations` для карточек отчёта. У карточки без подтверждённого
+пространства поле `url` равно `null`, а `link_reason` объясняет причину.
 
 `cards search --compact` возвращает ID, число совпадений и `complete` для
 каждой выбранной доски. `--created-after` принимает ISO 8601 с часовым поясом

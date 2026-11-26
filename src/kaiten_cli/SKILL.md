@@ -101,6 +101,17 @@ means the card search or archive list reached this limit and may be incomplete.
 Narrow a card search by board or query. Incomplete user or space catalogs stop
 the dependent workflow.
 
+## Links for reports and messages
+
+Use the URL returned by `kaiten links card CARD --board BOARD` or
+`kaiten links space SPACE`. With `--json` use `data.url`. Card links have the
+form `https://<tenant>/space/<space_id>/boards/card/<card_id>`. The number after
+`/space/` comes from the board's placement in Kaiten. When several placements
+remain and none is marked primary, pass a known `--space SPACE` to verify it.
+For `cards view` and `cards audit-relations`, add `--with-links` and use the
+returned `url` fields. A null URL means the space could not be resolved. Use
+`links card` to resolve links from search or mutation results before sharing.
+
 ## Create cards
 
 Use `cards create --title '<exact title>' --board <ID> --column <ID>`.

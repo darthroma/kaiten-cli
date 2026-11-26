@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Resolve shareable card and space links using board placement data from Kaiten.
+- Include space-aware URLs in card views and relation audits with `--with-links`.
+
 ## 0.6.0
 
 - Verify card creators against space activity with `cards view --with-creator`.

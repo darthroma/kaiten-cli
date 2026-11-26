@@ -84,6 +84,10 @@ def _timestamp(value):
     return None
 
 
+def _space_url(tenant, space_id):
+    return f"https://{tenant}/space/{space_id}/boards"
+
+
 class KaitenAdapter:
     def __init__(self, store: LocalConfigStore | None = None, *, credentials=None, client_factory=None):
         self.store = store or LocalConfigStore()
@@ -99,18 +103,7 @@ class KaitenAdapter:
             raise KaitenError("space_invalid", "Space IDs must be positive integers.")
         profile, tenant = normalize_profile(profile), normalize_tenant(tenant)
         self._verify_profile(profile, tenant)
-        spaces = []
-        seen = set()
-        for page in range(20):
-            batch = self._metadata(self._request(profile, "GET", "/spaces", params={"limit": 100, "offset": page * 100}))
-            if any(space["id"] in seen for space in batch):
-                raise KaitenError("bad_json", "Space pagination returned a repeated identity.")
-            seen.update(space["id"] for space in batch)
-            spaces.extend(batch)
-            if len(batch) < 100:
-                break
-        else:
-            raise KaitenError("incomplete", "Space discovery exceeded 2000 items; no partial setup was saved.")
+        spaces = [space for _, items in self._space_pages(profile) for space in items]
         if space_ids:
             selected = set(space_ids)
             if not selected.issubset({space["id"] for space in spaces}):
@@ -133,6 +126,20 @@ class KaitenAdapter:
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
         return {"spaces": spaces, "boards": boards, "saved": False}
+
+    def _space_pages(self, profile):
+        seen = set()
+        for page in range(20):
+            batch = self._request(profile, "GET", "/spaces", params={"limit": 100, "offset": page * 100})
+            items = self._metadata(batch)
+            ids = {space["id"] for space in items}
+            if len(ids) != len(items) or ids & seen:
+                raise KaitenError("bad_json", "Space pagination returned a repeated identity.")
+            seen.update(ids)
+            yield batch, items
+            if len(batch) < 100:
+                return
+        raise KaitenError("incomplete", "Space catalog exceeded 2000 items.")
 
     @staticmethod
     def _metadata(data):
@@ -157,6 +164,75 @@ class KaitenAdapter:
         for board in boards:
             policy.assert_allowed("cards.read", board)
         return boards
+
+    def space_link(self, space_id):
+        policy = load_policy(self.store)
+        self._verify_profile(policy.profile, policy.tenant)
+        space = self._request(policy.profile, "GET", f"/spaces/{space_id}")
+        if (not isinstance(space, dict) or type(space.get("id")) is not int or space["id"] != space_id
+                or not isinstance(space.get("title"), str) or space.get("entity_type", "space") != "space"):
+            raise KaitenError("space_not_found", "Kaiten did not confirm the requested space.")
+        self._check_policy(policy)
+        return {"space_id": space_id, "title": space["title"], "url": _space_url(policy.tenant, space_id)}
+
+    def card_link(self, reference, *, board_id=None, space_id=None):
+        policy = load_policy(self.store)
+        boards = self._allowed_boards(policy, () if board_id is None else (board_id,))
+        card_id = self._card_reference(reference, policy.tenant)
+        if card_id is None:
+            raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL.")
+        result = self._find_card_including_archive(policy, boards, card_id)
+        if not result["cards"]:
+            code = "not_found" if result["complete"] else "incomplete"
+            raise KaitenError(code, "Could not find the card on the selected allowed boards.")
+        card = result["cards"][0]
+        detail = self._card_detail(policy, card_id, card["board_id"])
+        if space_id is None:
+            placements = self._board_spaces(policy, {card["board_id"]})
+            link = self._card_link_fields(policy, detail, placements)
+        else:
+            board = self._request(policy.profile, "GET", f"/spaces/{space_id}/boards/{card['board_id']}")
+            if (not isinstance(board, dict) or type(board.get("id")) is not int or board["id"] != card["board_id"]
+                    or type(board.get("space_id")) is not int or board["space_id"] != space_id):
+                raise KaitenError("space_not_found", "Kaiten did not confirm the board in that space.")
+            link = self._card_link_fields(policy, detail, {card["board_id"]: {space_id: False}})
+        self._check_policy(policy)
+        if link["url"] is None:
+            raise KaitenError(link["link_reason"], "Could not select a space for the card. Specify --space if known.", link)
+        return {"card_id": card_id, "board_id": detail["board_id"], "title": detail["title"], **link}
+
+    def _board_spaces(self, policy, boards):
+        placements = {board: {} for board in boards}
+        for board in placements:
+            policy.assert_allowed("cards.read", board)
+        if not placements:
+            return placements
+        for batch, _ in self._space_pages(policy.profile):
+            self._check_policy(policy)
+            for space in batch:
+                if space.get("entity_type", "space") != "space":
+                    continue
+                space_boards = space.get("boards")
+                if space_boards is None:
+                    continue
+                if not isinstance(space_boards, list) or any(not isinstance(board, dict) for board in space_boards):
+                    raise KaitenError("bad_json", "Kaiten returned invalid space boards.")
+                for board in space_boards:
+                    board_id = board.get("id")
+                    if (type(board_id) is int and board_id in placements
+                            and board.get("space_id", space["id"]) == space["id"]):
+                        placements[board_id][space["id"]] = board.get("primary_path") is True
+        return placements
+
+    @staticmethod
+    def _card_link_fields(policy, card, placements):
+        spaces = placements[card["board_id"]]
+        primary = [space_id for space_id, is_primary in spaces.items() if is_primary]
+        if len(primary) == 1 or len(spaces) == 1:
+            space_id = primary[0] if primary else next(iter(spaces))
+            return {"space_id": space_id, "url": f"{_space_url(policy.tenant, space_id)}/card/{card['id']}"}
+        reason = "space_ambiguous" if spaces else "space_not_found"
+        return {"url": None, "space_id": None, "link_reason": reason, "space_ids": sorted(spaces)}
 
     def find_cards(self, query: str | None, *, board_id: int | None = None, board_ids=(), include_metadata=False,
                    responsible_id=None, member_id=None, tag=None, column_id=None, lane_id=None,
@@ -208,7 +284,7 @@ class KaitenAdapter:
         self._check_policy(policy)
         return {"boards": summaries, "complete": all(board["complete"] for board in summaries)}
 
-    def view_card(self, reference: str, *, board_id: int | None = None, with_related=False,
+    def view_card(self, reference: str, *, board_id: int | None = None, with_related=False, with_links=False,
                   with_creator=False, activity_spaces=()):
         policy = load_policy(self.store)
         policy.assert_allowed("cards.read", board_id)
@@ -216,8 +292,8 @@ class KaitenAdapter:
         boards = (board_id,) if board_id is not None else policy.board_allowlist
         with_creator = with_creator or bool(activity_spaces)
         if card_id is None:
-            if with_related or with_creator:
-                raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL for related cards or creator.")
+            if with_related or with_creator or with_links:
+                raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL for related cards, links or creator.")
             return self._list_cards(policy, boards, {"query": reference}, include_metadata=True)
         if with_creator and not activity_spaces:
             match = re.match(r"/space/([1-9][0-9]*)/", urlsplit(reference).path)
@@ -236,6 +312,11 @@ class KaitenAdapter:
         card.update(parents=parents, children=children, relations_complete=parents_complete and children_complete)
         if with_creator:
             card.update(self._card_creator(policy, detail, activity_spaces))
+        if with_links:
+            linked_cards = [card, *parents, *children]
+            placements = self._board_spaces(policy, {item["board_id"] for item in linked_cards})
+            for item in linked_cards:
+                item.update(self._card_link_fields(policy, item, placements))
         self._check_policy(policy)
         return result
 
