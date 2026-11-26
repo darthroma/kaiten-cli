@@ -3,11 +3,15 @@
 Работа с Kaiten из терминала и чата агента:
 
 - Создание карточек с описанием, сроком и ответственным.
-- Редактирование названия, описания и срока карточки.
-- Чтение, поиск и просмотр архива карточек на выбранных досках.
+- Редактирование названия, описания, срока, типа и пользовательских полей.
+- Поиск по тексту, участникам, меткам, расположению, срокам и архивному состоянию.
+- Просмотр истории, отправка карточек в архив и восстановление из архива.
 - Внутренние комментарии с упоминанием коллег и вложениями.
 - Загрузка файлов прямо в карточку.
-- Перемещение карточек между колонками одной доски.
+- Поиск людей, назначение ответственных и управление участниками.
+- Управление метками, чек-листами, связями и блокировками.
+- Перенос между разрешёнными досками, массовые правки и архивация.
+- Выгрузка поиска в CSV или JSON, отчёты по просроченным и заблокированным задачам и по ответственным.
 
 ## Установка
 
@@ -62,9 +66,18 @@ kaiten auth login --profile work --tenant company.kaiten.ru
 kaiten cards view 12345 --board 456
 kaiten cards view 12345 --board 456 --with-related --json
 kaiten cards search 'Отчёт' --board 456
+kaiten cards search --board 456 --responsible 789 --condition active
 kaiten cards archive --board 456
+kaiten cards update 12345 --board 456 --archive --dry-run
+kaiten cards update 12345 --board 456 --archive --authorization direct
+kaiten cards update 12345 --board 456 --restore --authorization direct
 kaiten cards history 12345 --board 456
 kaiten boards info 456
+kaiten users find @username
+kaiten members assign 12345 @username --board 456 --dry-run
+kaiten cards bulk-update 12345 12346 --board 456 --archive --dry-run --json
+kaiten cards report --board 456 --kind overdue --json
+kaiten cards export --board 456 --condition active > cards.csv
 kaiten files upload 12345 --board 456 --file ./report.pdf --authorization direct
 ```
 
@@ -78,8 +91,12 @@ ID, название, доску и ссылку. `--with-related` добавл�
 `cards view <ID> --board <board_id>`, чтобы пройти на следующий уровень.
 `relations_complete: false` означает, что часть связей недоступна.
 
-CLI работает в пределах выбранных досок. Поиск по исполнителю, удаление
-карточек и перемещение между досками пока не поддерживаются.
+CLI работает в пределах выбранных досок. При архивации из очереди или работы
+Kaiten может удалить связи с родительскими и дочерними карточками. Если
+предпросмотр показывает этот эффект, для записи требуется `--allow-unlink`.
+
+Примеры команд записи, отчётов и переноса между досками есть в
+[справке по работе с карточками](docs/configuration.md#участники-и-поля-карточки).
 
 [Настройки, обновление и автоматизация](docs/configuration.md) ·
 [Разработка](CONTRIBUTING.md)

@@ -141,12 +141,23 @@ class KaitenAdapter:
             topology[resource] = items
         return topology
 
-    def find_cards(self, query: str, *, board_id: int | None = None, include_metadata=False):
+    def find_cards(self, query: str | None, *, board_id: int | None = None, include_metadata=False,
+                   responsible_id=None, member_id=None, tag=None, column_id=None, lane_id=None,
+                   condition=None, due_before=None, due_after=None):
         policy = load_policy(self.store)
         policy.assert_allowed("cards.read", board_id)
-        card_id = self._card_reference(query, policy.tenant)
+        filters = {key: value for key, value in {
+            "responsible_id": responsible_id, "member_ids": member_id, "tag": tag,
+            "column_id": column_id, "lane_id": lane_id, "condition": condition,
+            "due_date_before": due_before, "due_date_after": due_after,
+        }.items() if value is not None}
+        if query is None and not filters:
+            raise KaitenError("query_invalid", "Provide a search query or at least one card filter.")
+        card_id = None
+        if query is not None:
+            card_id = self._card_reference(query, policy.tenant)
+            filters.update({"query": query} if card_id is None else {"ids": str(card_id)})
         boards = (board_id,) if board_id is not None else policy.board_allowlist
-        filters = {"query": query} if card_id is None else {"ids": str(card_id)}
         return self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=include_metadata)
 
     def view_card(self, reference: str, *, board_id: int | None = None, with_related=False):
@@ -159,11 +170,7 @@ class KaitenAdapter:
                 raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL with --with-related.")
             return self._list_cards(policy, boards, {"query": reference}, include_metadata=True)
 
-        filters = {"ids": str(card_id)}
-        result = self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=True)
-        if result["status"] == "empty":
-            result = self._list_cards(policy, boards, {**filters, "condition": 2},
-                                      card_id=card_id, include_metadata=True)
+        result = self._find_card_including_archive(policy, boards, card_id)
         if not result["cards"]:
             return result
 
@@ -174,6 +181,14 @@ class KaitenAdapter:
         if load_policy(self.store) != policy:
             raise KaitenError("policy_changed", "Local profile or board selection changed; retry the read.")
         card.update(parents=parents, children=children, relations_complete=parents_complete and children_complete)
+        return result
+
+    def _find_card_including_archive(self, policy, boards, card_id):
+        filters = {"ids": str(card_id)}
+        result = self._list_cards(policy, boards, filters, card_id=card_id, include_metadata=True)
+        if result["status"] == "empty":
+            return self._list_cards(policy, boards, {**filters, "condition": 2},
+                                    card_id=card_id, include_metadata=True)
         return result
 
     def _card_detail(self, policy, card_id, board_id):
@@ -241,7 +256,7 @@ class KaitenAdapter:
         if card_id is None:
             raise KaitenError("query_invalid", "Use a numeric card ID or HTTPS card URL.")
         boards = (board_id,) if board_id is not None else policy.board_allowlist
-        result = self._list_cards(policy, boards, {"ids": str(card_id)}, card_id=card_id, include_metadata=True)
+        result = self._find_card_including_archive(policy, boards, card_id)
         if not result["complete"]:
             raise KaitenError("incomplete", "Narrow the board before inspecting history.")
         if not result["cards"]:
@@ -319,8 +334,9 @@ class KaitenAdapter:
                         raise KaitenError("bad_json", "Kaiten API card identity is invalid.")
                     if type(card.get("board_id")) is not int or card["board_id"] != board:
                         raise KaitenError("forbidden", "Kaiten API returned a card outside the requested board.")
-                    if condition is not None and card.get("condition") != condition:
-                        raise KaitenError("bad_json", "Kaiten API returned a card outside the archive.")
+                    if condition is not None and (type(card.get("condition")) is not int
+                                                  or card["condition"] != condition):
+                        raise KaitenError("bad_json", "Kaiten API returned a card outside the requested condition.")
                     if (card_id is None or card["id"] == card_id) and not any(
                             item["id"] == card["id"] for item in cards):
                         selected = {key: card.get(key) for key in CARD_FIELDS.split(",")}

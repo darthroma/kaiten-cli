@@ -76,6 +76,22 @@ def test_archive_lists_only_the_requested_board_across_pages(fake_api, local_sto
     ]
 
 
+def test_search_can_use_server_side_filters_without_text(monkeypatch, fake_api, local_store):
+    adapter = KaitenAdapter(local_store, **fake_api({'/cards': [{**CARD, 'condition': 2}]}))
+    monkeypatch.setattr(cli, 'KaitenAdapter', lambda store: adapter)
+
+    result = CliRunner().invoke(cli.kaiten, ['cards', 'search', '--board', '12', '--responsible', '7',
+        '--member', '8', '--tag', 'Срочно', '--column', '4', '--lane', '5', '--condition', 'archived',
+        '--due-after', '2026-11-01', '--due-before', '2026-12-01', '--json'])
+
+    assert result.exit_code == 0 and json.loads(result.output)['data']['cards'][0]['id'] == 33
+    assert fake_api.calls() == [{'method': 'GET', 'path': '/cards', 'body': None, 'params': {
+        'board_id': ['12'], 'limit': ['100'], 'offset': ['0'], 'additional_card_fields': ['description'],
+        'responsible_id': ['7'], 'member_ids': ['8'], 'tag': ['Срочно'], 'column_id': ['4'], 'lane_id': ['5'],
+        'condition': ['2'], 'due_date_after': ['2026-11-01'], 'due_date_before': ['2026-12-01'],
+    }}]
+
+
 @pytest.mark.parametrize('command,arguments', [
     ('view', ['33']),
     ('search', ['Задача']),

@@ -1,6 +1,7 @@
 """First-party Kaiten command registration over the official REST API."""
 
 from dataclasses import asdict
+from datetime import date
 import json
 import sys
 import re
@@ -14,6 +15,8 @@ from .mutations import KaitenMutations
 from .files import KaitenFiles
 from .creation import KaitenCreation
 from .editing import KaitenEditing
+from .resources import KaitenResources
+from .reporting import card_report, cards_csv
 from .auth import CredentialStore
 from .diagnostics import doctor as check_setup
 
@@ -32,19 +35,24 @@ def _store(ctx):
     return LocalConfigStore(tracked_root=ctx.obj["root"])
 
 
-def _present(ctx, command_json, operation):
+def _present(ctx, command_json, operation, *, format_text=None):
     as_json = bool(ctx.obj["json"] or command_json)
     try:
         result = operation()
         if result.get("status") in {"ambiguous", "not-applied", "partial"}:
             raise KaitenError("mutation_" + result["status"].replace("-", "_"),
                               "Check the readback result before any new write; do not automatically repeat this command.", result)
+        if format_text is not None and not as_json:
+            click.echo(format_text(result), nl=False)
+            return
     except KaitenError as exc:
         if as_json:
             click.echo(json.dumps({"ok": False, "data": None, "error": {
                 "code": exc.code, "message": exc.message, "details": exc.details}}, ensure_ascii=False))
         else:
             click.echo(f"Error [{exc.code}]: {exc.message}", err=True)
+            if exc.code == "mutation_partial":
+                click.echo(json.dumps(exc.details, ensure_ascii=False, indent=2), err=True)
         raise click.exceptions.Exit(1) from exc
     if as_json:
         click.echo(json.dumps({"ok": True, "data": result, "error": None}, ensure_ascii=False))
@@ -90,7 +98,7 @@ class EnvelopeGroup(click.Group):
 @click.option("--json", "group_json", is_flag=True)
 @click.pass_context
 def kaiten(ctx, group_json):
-    """Kaiten: create, edit and read cards, internal comments, file attachments and same-board moves."""
+    """Manage Kaiten cards, related resources and reports on allowed boards."""
     ctx.obj = {"root": Path(__file__).resolve().parents[2], "json": group_json}
 
 
@@ -256,15 +264,76 @@ def view(ctx, reference, board, with_related, command_json):
         reference, board_id=board, with_related=with_related))
 
 
+def _search_options(function):
+    for decorator in (
+        click.option("--json", "command_json", is_flag=True),
+        click.option("--due-after", type=click.DateTime(formats=["%Y-%m-%d"])),
+        click.option("--due-before", type=click.DateTime(formats=["%Y-%m-%d"])),
+        click.option("--condition", type=click.Choice(["active", "archived"])),
+        click.option("--lane", "lane_id", type=click.IntRange(min=1)),
+        click.option("--column", "column_id", type=click.IntRange(min=1)),
+        click.option("--tag", help="Tag name."),
+        click.option("--member", "member_id", type=click.IntRange(min=1), help="Card member user ID."),
+        click.option("--responsible", "responsible_id", type=click.IntRange(min=1), help="Responsible user ID."),
+        click.option("--board", type=click.IntRange(min=1)),
+        click.argument("query", required=False),
+    ):
+        function = decorator(function)
+    return function
+
+
+def _search_cards(ctx, query, *, board, condition, due_before, due_after, **filters):
+    return KaitenAdapter(_store(ctx)).find_cards(
+        query, board_id=board, include_metadata=True,
+        condition={"active": 1, "archived": 2}.get(condition),
+        due_before=due_before.date().isoformat() if due_before else None,
+        due_after=due_after.date().isoformat() if due_after else None, **filters)
+
+
 @cards.command("search")
-@click.argument("query")
+@_search_options
+@click.pass_context
+def search(ctx, query, command_json, **options):
+    """Find cards by text, ID/URL, or filters inside permitted boards."""
+    _present(ctx, command_json, lambda: _search_cards(ctx, query, **options))
+
+
+@cards.command("export")
+@_search_options
+@click.pass_context
+def export_cards(ctx, query, command_json, **options):
+    """Export search results to CSV, or use --json for structured results."""
+    def csv_output(result):
+        if not result['complete']:
+            raise KaitenError('incomplete', 'Narrow the export or inspect partial results using --json.')
+        return cards_csv(result)
+
+    if query is None and not any(value is not None for key, value in options.items() if key != 'board'):
+        options['condition'] = 'active'
+    _present(ctx, command_json, lambda: _search_cards(ctx, query, **options), format_text=csv_output)
+
+
+@cards.command("report")
 @click.option("--board", type=click.IntRange(min=1))
+@click.option("--kind", type=click.Choice(["all", "overdue", "blocked", "responsible"]), default="all")
+@click.option("--as-of", type=click.DateTime(formats=["%Y-%m-%d"]), help="Compare deadline dates to this day; defaults to today.")
 @click.option("--json", "command_json", is_flag=True)
 @click.pass_context
-def search(ctx, query, board, command_json):
-    """Search UTF-8 text (or an ID/URL) only inside permitted boards."""
-    _present(ctx, command_json, lambda: KaitenAdapter(_store(ctx)).find_cards(
-        query, board_id=board, include_metadata=True))
+def report_cards(ctx, board, kind, as_of, command_json):
+    """Report overdue cards, blockers and counts by responsible user."""
+    def operation():
+        result = KaitenAdapter(_store(ctx)).find_cards(None, board_id=board, include_metadata=True, condition=1)
+        return card_report(result, as_of.date() if as_of else date.today(), kind)
+    _present(ctx, command_json, operation)
+
+
+@cards.command("catalog")
+@click.argument("resource", type=click.Choice(["types", "properties"]))
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def card_catalog(ctx, resource, command_json):
+    """Look up card type and custom property IDs."""
+    _present(ctx, command_json, lambda: KaitenResources(_store(ctx)).catalog(resource))
 
 
 @cards.command("archive")
@@ -313,30 +382,61 @@ def card_create(ctx, title, board, column, lane, description, due_date, responsi
     _present(ctx, command_json, operation)
 
 
+def _edit_options(function):
+    for decorator in (
+        click.option("--json", "command_json", is_flag=True),
+        click.option("--dry-run", is_flag=True, help="Show the current fields and selected changes without PATCH."),
+        click.option("--approval", help="Hash from --dry-run."),
+        click.option("--allow-unlink", is_flag=True, help="Allow archiving when Kaiten may remove parent/child links."),
+        click.option("--restore", is_flag=True, help="Return archived cards to their boards."),
+        click.option("--archive", is_flag=True, help="Send cards to the archive."),
+        click.option("--property", "properties", multiple=True, help="Set a custom property as ID=JSON; null clears it."),
+        click.option("--type", "type_id", type=click.IntRange(min=1), help="New card type ID."),
+        click.option("--clear-due-date", is_flag=True, help="Remove the current deadline."),
+        click.option("--due-date", help="Set a deadline in YYYY-MM-DD format, without a time."),
+        click.option("--description", help="Replace the whole description; use an empty string to clear it."),
+        click.option("--title", help="Replace the title (1–1024 characters)."),
+        click.option("--board", "board_id", type=click.IntRange(min=1), help="Known board ID to limit lookup."),
+    ):
+        function = decorator(function)
+    return function
+
+
+def _edit_input(archive, restore, allow_unlink, **options):
+    if archive and restore:
+        raise KaitenError("archive_options_invalid", "Choose either --archive or --restore.")
+    if allow_unlink and not archive:
+        raise KaitenError("archive_options_invalid", "Use --allow-unlink only with --archive.")
+    return {**options, "condition": 2 if archive else (1 if restore else None)}
+
+
 @cards.command("update")
 @click.argument("reference")
-@click.option("--board", type=click.IntRange(min=1), help="Known board ID to avoid scanning other allowed boards.")
-@click.option("--title", help="Replace the title (1–1024 characters).")
-@click.option("--description", help="Replace the whole description; use an empty string to clear it.")
-@click.option("--due-date", help="Set a deadline in YYYY-MM-DD format, without a time.")
-@click.option("--clear-due-date", is_flag=True, help="Remove the current deadline.")
+@_edit_options
 @click.option("--authorization", type=click.Choice(["direct", "approved"]),
               help="direct: exact user edit request; approved: accepted dry-run preview. Required for writes.")
-@click.option("--approval", help="Hash from --dry-run; required with --authorization approved.")
-@click.option("--dry-run", is_flag=True, help="Show the current fields and selected changes without PATCH.")
-@click.option("--json", "command_json", is_flag=True)
 @click.pass_context
-def card_update(ctx, reference, board, title, description, due_date, clear_due_date,
-                authorization, approval, dry_run, command_json):
-    """Edit selected fields of one card by ID/URL, then verify them. Never retries."""
+def card_update(ctx, reference, allow_unlink, authorization, approval, dry_run, command_json, **fields):
+    """Edit, archive or restore one card by ID/URL and verify the result."""
     def operation():
+        options = _edit_input(allow_unlink=allow_unlink, **fields)
         adapter = KaitenEditing(_store(ctx))
-        options = dict(board_id=board, title=title, description=description,
-                       due_date=due_date, clear_due_date=clear_due_date)
         if dry_run:
             return {"dry_run": True, **adapter.prepare_update(reference, **options)}
-        return adapter.update_card(reference, authorization=authorization, approval=approval, **options)
+        return adapter.update_card(reference, authorization=authorization, approval=approval,
+                                   allow_unlink=allow_unlink, **options)
     _present(ctx, command_json, operation)
+
+
+@cards.command("bulk-update")
+@click.argument("references", nargs=-1, required=True)
+@_edit_options
+@click.pass_context
+def card_bulk_update(ctx, references, allow_unlink, approval, dry_run, command_json, **fields):
+    """Preview and apply one change to an explicit list of cards."""
+    _present(ctx, command_json, lambda: KaitenEditing(_store(ctx)).bulk_update(
+        references, dry_run=dry_run, approval=approval, allow_unlink=allow_unlink,
+        **_edit_input(allow_unlink=allow_unlink, **fields)))
 
 
 @kaiten.group("boards")
@@ -350,6 +450,138 @@ def boards():
 @click.pass_context
 def board_info(ctx, board, command_json):
     _present(ctx, command_json, lambda: KaitenMutations(_store(ctx)).board_info(board))
+
+
+@kaiten.group("users")
+def users():
+    """Find active Kaiten accounts."""
+
+
+@users.command("find")
+@click.argument("query")
+@click.option("--json", "command_json", is_flag=True)
+@click.pass_context
+def users_find(ctx, query, command_json):
+    """Find by name, exact @username or user ID."""
+    _present(ctx, command_json, lambda: KaitenMutations(_store(ctx)).find_users(query))
+
+
+def _resource_options(function):
+    for decorator in (
+        click.option("--json", "command_json", is_flag=True),
+        click.option("--board", "board_id", type=click.IntRange(min=1), help="Known board of the card."),
+        click.option("--dry-run", is_flag=True, help="Show the planned change without writing."),
+        click.option("--approval", help="Hash from the reviewed --dry-run."),
+        click.option("--authorization", type=click.Choice(["direct", "approved"]),
+                     help="Required for writes: exact user request or an approved preview."),
+    ):
+        function = decorator(function)
+    return function
+
+
+@kaiten.command("members")
+@click.argument("action", type=click.Choice(["list", "add", "assign", "remove"]))
+@click.argument("reference", metavar="CARD")
+@click.argument("user", required=False)
+@_resource_options
+@click.pass_context
+def card_members(ctx, action, reference, user, command_json, **options):
+    """List or change participants and the responsible user on a card."""
+    def operation():
+        if (action == "list") != (user is None):
+            raise KaitenError("user_invalid", "Pass a user ID, exact name or @username for add, assign or remove.")
+        return KaitenResources(_store(ctx)).members(reference, action=action, user=user, **options)
+    _present(ctx, command_json, operation)
+
+
+@kaiten.command("tags")
+@click.argument("action", type=click.Choice(["list", "add", "remove"]))
+@click.argument("reference", metavar="CARD")
+@click.argument("tag", required=False)
+@_resource_options
+@click.pass_context
+def card_tags(ctx, action, reference, tag, command_json, **options):
+    """List card tags, add by name or remove by tag ID."""
+    def operation():
+        if (action == "list") != (tag is None):
+            raise KaitenError("tag_invalid", "Pass a name for add, or a tag ID for remove.")
+        if action == "remove" and not re.fullmatch(r"[1-9][0-9]*", tag):
+            raise KaitenError("tag_invalid", "Choose a positive tag ID from tags list.")
+        return KaitenResources(_store(ctx)).tags(reference, action=action, name=tag if action == "add" else None,
+                                                tag_id=int(tag) if action == "remove" else None, **options)
+    _present(ctx, command_json, operation)
+
+
+@kaiten.command("relations")
+@click.argument("action", type=click.Choice(["add", "remove"]))
+@click.argument("parent")
+@click.argument("child")
+@click.option("--child-board", "child_board_id", type=click.IntRange(min=1))
+@_resource_options
+@click.pass_context
+def card_relations(ctx, action, parent, child, command_json, **options):
+    """Link or unlink a parent and child on allowed boards."""
+    _present(ctx, command_json, lambda: KaitenResources(_store(ctx)).relation(
+        parent, child, remove=action == "remove", **options))
+
+
+@kaiten.command("blockers")
+@click.argument("action", type=click.Choice(["list", "add", "update", "release"]))
+@click.argument("reference", metavar="CARD")
+@click.option("--reason")
+@click.option("--blocker", help="Card ID or URL that blocks this card.")
+@click.option("--blocker-board", "blocker_board_id", type=click.IntRange(min=1))
+@click.option("--block-id", type=click.IntRange(min=1), help="Block ID from blockers list.")
+@_resource_options
+@click.pass_context
+def card_blockers(ctx, action, reference, reason, blocker, blocker_board_id, block_id, command_json, **options):
+    """List, add, edit or release individual card blockers."""
+    def operation():
+        if (((action in {"update", "release"}) != (block_id is not None))
+                or (action in {"list", "release"} and any(value is not None for value in (reason, blocker, blocker_board_id)))
+                or (blocker_board_id is not None and blocker is None)):
+            raise KaitenError("blocker_invalid", "Use --reason or --blocker for changes, and --block-id for update or release.")
+        return KaitenResources(_store(ctx)).blockers(
+            reference, action=action, reason=reason, blocker=blocker, blocker_board_id=blocker_board_id,
+            block_id=block_id, **options)
+    _present(ctx, command_json, operation)
+
+
+@kaiten.command("checklists")
+@click.argument("action", type=click.Choice(["list", "add", "update", "remove", "item-add", "item-update", "item-remove"]))
+@click.argument("reference", metavar="CARD")
+@click.option("--checklist", "checklist_id", type=click.IntRange(min=1))
+@click.option("--item", "item_id", type=click.IntRange(min=1))
+@click.option("--name", help="Checklist name.")
+@click.option("--text", help="Checklist item text.")
+@click.option("--checked/--unchecked", default=None, help="Checklist item completion state.")
+@click.option("--due-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--clear-due-date", is_flag=True)
+@click.option("--responsible", "responsible_id", type=click.IntRange(min=1), help="Responsible user ID for an item.")
+@click.option("--clear-responsible", is_flag=True)
+@_resource_options
+@click.pass_context
+def card_checklists(ctx, action, reference, command_json, **options):
+    """List, create, rename and remove checklists and checklist items."""
+    def operation():
+        required = {
+            "list": (), "add": ("name",), "update": ("checklist_id", "name"), "remove": ("checklist_id",),
+            "item-add": ("checklist_id", "text"), "item-update": ("checklist_id", "item_id"),
+            "item-remove": ("checklist_id", "item_id"),
+        }[action]
+        item_fields = {"checked", "due_date", "responsible_id"}
+        if action == "item-update":
+            item_fields.update(("text", "clear_due_date", "clear_responsible"))
+        allowed = set(required) | (item_fields if action in {"item-add", "item-update"} else set())
+        fields = {"checklist_id", "item_id", "name", "text", "checked", "due_date", "responsible_id"}
+        provided = {field for field in fields if options[field] is not None}
+        provided.update(field for field in ("clear_due_date", "clear_responsible") if options[field])
+        if not set(required) <= provided <= allowed:
+            raise KaitenError("checklist_options_invalid", "Use checklist and item IDs and fields appropriate for the selected action.")
+        if options["due_date"] is not None:
+            options["due_date"] = options["due_date"].date().isoformat()
+        return KaitenResources(_store(ctx)).checklists(reference, action=action, **options)
+    _present(ctx, command_json, operation)
 
 
 @kaiten.group("comments")
@@ -464,14 +696,15 @@ def file_upload(ctx, reference, file_path, board, comment, command_json, authori
 
 @kaiten.group("move")
 def move():
-    """Prepare/apply a move inside the same allowed board."""
+    """Prepare/apply a move within or between allowed boards."""
 
 
 def _move_options(function):
     for decorator in (
         click.option("--json", "command_json", is_flag=True),
-        click.option("--board", type=click.IntRange(min=1)),
-        click.option("--lane", type=click.IntRange(min=1), help="Target lane; defaults to the current lane."),
+        click.option("--board", type=click.IntRange(min=1), help="Source board ID."),
+        click.option("--to-board", type=click.IntRange(min=1), help="Target board ID for a cross-board move."),
+        click.option("--lane", type=click.IntRange(min=1), help="Target lane; required across boards with multiple lanes."),
         click.option("--column", type=click.IntRange(min=1), required=True),
         click.argument("reference"),
     ):
@@ -482,10 +715,10 @@ def _move_options(function):
 @move.command("prepare")
 @_move_options
 @click.pass_context
-def move_prepare(ctx, reference, column, lane, board, command_json):
+def move_prepare(ctx, reference, column, lane, board, to_board, command_json):
     """Show card, source position, target position and approval hash."""
     _present(ctx, command_json, lambda: KaitenMutations(_store(ctx)).prepare_move(
-        reference, column, lane_id=lane, board_id=board))
+        reference, column, lane_id=lane, board_id=board, to_board_id=to_board))
 
 
 @move.command("apply")
@@ -495,13 +728,13 @@ def move_prepare(ctx, reference, column, lane, board, command_json):
 @click.option("--approval", help="Required for a proposal; hash of its prepare result.")
 @click.option("--dry-run", is_flag=True, help="Show current preview without PATCH.")
 @click.pass_context
-def move_apply(ctx, reference, column, lane, board, command_json, authorization, approval, dry_run):
-    """Apply one same-board PATCH and verify resulting location."""
+def move_apply(ctx, reference, column, lane, board, to_board, command_json, authorization, approval, dry_run):
+    """Apply one PATCH and verify the resulting location."""
     def operation():
         adapter = KaitenMutations(_store(ctx))
         if dry_run:
-            return {"dry_run": True, **adapter.prepare_move(reference, column, lane_id=lane, board_id=board)}
-        return adapter.apply_move(reference, column, lane_id=lane, board_id=board,
+            return {"dry_run": True, **adapter.prepare_move(reference, column, lane_id=lane, board_id=board, to_board_id=to_board)}
+        return adapter.apply_move(reference, column, lane_id=lane, board_id=board, to_board_id=to_board,
                                   authorization=authorization, approval=approval)
     _present(ctx, command_json, operation)
 

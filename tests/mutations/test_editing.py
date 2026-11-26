@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, build_opener
 
 import pytest
@@ -20,7 +20,9 @@ from test_full_e2e import installed_surface
 @contextmanager
 def editing_api():
     state = dict(calls=[], card=dict(id=33, title='Задача', board_id=12, column_id=4, lane_id=5,
-        state=1, description='Описание', due_date='2026-10-15T00:00:00.000Z', due_date_time_present=False),
+        state=1, condition=1, parents_count=0, children_count=0,
+        description='Описание', due_date='2026-10-15T00:00:00.000Z', due_date_time_present=False,
+        type_id=1, properties={'id_2': 'keep'}),
         status=200, apply=True, readback_status=200, readback_override={}, detail_count=0, change_at=None, readback_from_patch=1)
 
     class Handler(BaseHTTPRequestHandler):
@@ -31,7 +33,9 @@ def editing_api():
         def do_GET(self):
             path = urlsplit(self.path).path.removeprefix('/api/latest')
             state['calls'].append(('GET', path, None))
-            if path == '/cards': return self.respond(200, [state['card']])
+            if path == '/cards':
+                condition = parse_qs(urlsplit(self.path).query).get('condition', ['1'])[0]
+                return self.respond(200, [state['card']] if str(state['card']['condition']) == condition else [])
             if path == '/cards/33':
                 state['detail_count'] += 1
                 if state['detail_count'] == state['change_at']:
@@ -47,9 +51,11 @@ def editing_api():
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             state['calls'].append(('PATCH', path, body))
             assert path == '/cards/33' and self.headers['Authorization'] == 'Bearer synthetic-edit'
-            assert body and set(body) <= {'title','description','due_date','due_date_time_present'}
+            assert body and set(body) <= {'title','description','due_date','due_date_time_present','condition','type_id','properties'}
             if state['status'] < 400 and state['apply']:
-                state['card'].update(body)
+                if 'properties' in body:
+                    state['card']['properties'].update(body['properties'])
+                state['card'].update({key: value for key, value in body.items() if key != 'properties'})
                 if state['card']['description'] == '': state['card']['description'] = None
                 if 'due_date' in body and body['due_date'] is not None:
                     state['card']['due_date'] += 'T00:00:00.000Z'
@@ -81,6 +87,48 @@ def editing(tmp_path, monkeypatch):
 
 
 def patches(state): return [c for c in state['calls'] if c[0]=='PATCH']
+
+
+def test_archive_and_restore_use_one_scoped_patch_each(editing):
+    adapter, state = editing
+    result = adapter.update_card('33', board_id=12, condition=2, authorization='direct')
+    assert result['status'] == 'applied' and result['card']['condition'] == 2
+    assert adapter.update_card('33', condition=2, authorization='direct')['status'] == 'already-applied'
+
+    preview = adapter.prepare_update('33', condition=1)
+    assert preview['before'] == {'condition': 2}
+    result = adapter.update_card('33', condition=1, authorization='approved', approval=preview['approval'])
+    assert result['status'] == 'applied' and result['card']['condition'] == 1
+    assert patches(state) == [('PATCH', '/cards/33', {'condition': condition}) for condition in (2, 1)]
+
+
+@pytest.mark.parametrize('relation_fields', [{'children_count': 1}, {'parents_count': None},
+                                             {'parents_ids': [42]}])
+def test_archive_requires_consent_for_possible_relation_loss(editing, relation_fields):
+    adapter, state = editing
+    state['card'].update(relation_fields)
+    preview = adapter.prepare_update('33', condition=2)
+    assert preview['archive_context']['may_remove_relations'] is True
+    with pytest.raises(KaitenError) as exc:
+        adapter.update_card('33', condition=2, authorization='direct')
+    assert exc.value.code == 'archive_may_remove_relations' and not patches(state)
+    result = adapter.update_card('33', condition=2, authorization='approved',
+                                 approval=preview['approval'], allow_unlink=True)
+    assert result['status'] == 'applied' and len(patches(state)) == 1
+
+
+def test_archive_rejects_stale_context_and_unverified_readback(editing):
+    adapter, state = editing
+    preview = adapter.prepare_update('33', condition=2)
+    state['card']['children_count'] = 1
+    with pytest.raises(KaitenError) as exc:
+        adapter.update_card('33', condition=2, authorization='approved', approval=preview['approval'])
+    assert exc.value.code == 'preview_changed' and not patches(state)
+
+    state['card']['state'] = 3
+    state['readback_override'] = {'condition': True}
+    result = adapter.update_card('33', condition=2, authorization='direct')
+    assert result['status'] == 'ambiguous' and not result['readback'] and len(patches(state)) == 1
 
 
 def test_edit_selected_fields_and_keep_everything_else(editing):
@@ -232,3 +280,18 @@ runpy.run_path(binary,run_name='__main__')
         state['readback_from_patch']=2
         result=invoke('cards','update','33','--clear-due-date','--authorization','direct',code=1)
         assert result['error']['code']=='mutation_ambiguous' and len(patches(state))==2
+        state['readback_status'] = 200
+        for flag, condition in (('--archive', 2), ('--restore', 1)):
+            args = ('cards', 'update', '33', '--board', '12', flag)
+            preview = invoke(*args, '--dry-run')['data']
+            assert preview['changes'] == {'condition': condition}
+            result = invoke(*args, '--authorization', 'approved', '--approval', preview['approval'])
+            assert result['data']['status'] == 'applied' and result['data']['card']['condition'] == condition
+        assert len(patches(state)) == 4
+        bulk = ('cards', 'bulk-update', '33', '--board', '12', '--type', '2', '--property', '3="test"')
+        preview = invoke(*bulk, '--dry-run')['data']
+        result = invoke(*bulk, '--approval', preview['approval'])['data']
+        assert result['cards'][0]['status'] == 'applied'
+        assert state['card']['properties'] == {'id_2': 'keep', 'id_3': 'test'}
+        assert invoke('cards', 'report', '--board', '12')['data']['total'] == 1
+        assert invoke('cards', 'export', '--board', '12')['data']['cards'][0]['type_id'] == 2
